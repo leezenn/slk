@@ -221,12 +221,17 @@ func parseTimeArg(val string) (string, error) {
 		return fmt.Sprintf("%d", t.Unix()), nil
 	}
 
+	// Absolute: 2024-01-15 14:00 (space separator)
+	if t, err := time.Parse("2006-01-02 15:04", val); err == nil {
+		return fmt.Sprintf("%d", t.Unix()), nil
+	}
+
 	// Absolute: 2024-01-15
 	if t, err := time.Parse("2006-01-02", val); err == nil {
 		return fmt.Sprintf("%d", t.Unix()), nil
 	}
 
-	return "", fmt.Errorf("unrecognized time format: %s (use 2024-01-15, 2024-01-15T14:00, 1h, 2d)", val)
+	return "", fmt.Errorf("unrecognized time format: %s (use 2024-01-15, 2024-01-15T14:00, \"2024-01-15 14:00\", 1h, 2d)", val)
 }
 
 func reverseMessages(msgs []api.Message) {
