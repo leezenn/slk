@@ -87,6 +87,38 @@ func FormatFileSize(size int64) string {
 	}
 }
 
+// FileCategory returns a short label based on MIME type for display.
+func FileCategory(mimetype string) string {
+	if mimetype == "" {
+		return "file"
+	}
+	slash := strings.Index(mimetype, "/")
+	if slash < 0 {
+		return "file"
+	}
+	major := mimetype[:slash]
+	switch major {
+	case "image":
+		return "image"
+	case "video":
+		return "video"
+	case "audio":
+		return "audio"
+	case "text":
+		return "text"
+	}
+	// Common application types
+	switch mimetype {
+	case "application/pdf":
+		return "pdf"
+	case "application/zip", "application/x-tar", "application/gzip", "application/x-7z-compressed":
+		return "archive"
+	case "application/json":
+		return "json"
+	}
+	return "file"
+}
+
 // FormatMessages formats messages for human-readable output.
 func FormatMessages(msgs []api.Message, channelName string, resolveUser func(string) string) string {
 	if len(msgs) == 0 {
@@ -96,8 +128,8 @@ func FormatMessages(msgs []api.Message, channelName string, resolveUser func(str
 	var b strings.Builder
 
 	for _, msg := range msgs {
-		// Skip messages without text content (subtypes like join/leave)
-		if msg.Text == "" {
+		// Skip messages without text content AND without files (subtypes like join/leave)
+		if msg.Text == "" && len(msg.Files) == 0 {
 			continue
 		}
 
@@ -154,7 +186,7 @@ func FormatMessages(msgs []api.Message, channelName string, resolveUser func(str
 
 		// Files
 		for _, f := range msg.Files {
-			fmt.Fprintf(&b, "    [file] %s (%s)\n", f.Name, FormatFileSize(f.Size))
+			fmt.Fprintf(&b, "    [%s] %s (%s)\n", FileCategory(f.Mimetype), f.Name, FormatFileSize(f.Size))
 		}
 
 		// Thread indicator
@@ -289,7 +321,14 @@ func FormatSearchResults(result *api.SearchResult, resolveUser func(string) stri
 		if author == m.User && m.Username != "" {
 			author = m.Username
 		}
-		fmt.Fprintf(&b, "  @%s: %s\n\n", author, text)
+		fmt.Fprintf(&b, "  @%s: %s\n", author, text)
+
+		// Files
+		for _, f := range m.Files {
+			fmt.Fprintf(&b, "    [%s] %s (%s)\n", FileCategory(f.Mimetype), f.Name, FormatFileSize(f.Size))
+		}
+
+		b.WriteString("\n")
 	}
 
 	return b.String()
@@ -327,7 +366,8 @@ type MessageJSON struct {
 func MessagesToJSON(msgs []api.Message, resolveUser func(string) string) []MessageJSON {
 	var out []MessageJSON
 	for _, msg := range msgs {
-		if msg.Text == "" {
+		// Skip messages without text content AND without files
+		if msg.Text == "" && len(msg.Files) == 0 {
 			continue
 		}
 		userName := resolveUser(msg.User)

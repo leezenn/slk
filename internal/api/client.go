@@ -158,6 +158,8 @@ type File struct {
 	URLPrivate         string `json:"url_private"`
 	URLPrivateDownload string `json:"url_private_download"`
 	Mimetype           string `json:"mimetype"`
+	Filetype           string `json:"filetype"`
+	PrettyType         string `json:"pretty_type"`
 }
 
 // User represents a Slack user.
@@ -202,13 +204,14 @@ type SearchMessages struct {
 
 // SearchMatch is a single search result match.
 type SearchMatch struct {
-	Type      string  `json:"type"`
-	User      string  `json:"user"`
-	Username  string  `json:"username"`
-	Text      string  `json:"text"`
-	Ts        string  `json:"ts"`
+	Type      string        `json:"type"`
+	User      string        `json:"user"`
+	Username  string        `json:"username"`
+	Text      string        `json:"text"`
+	Ts        string        `json:"ts"`
 	Channel   SearchChannel `json:"channel"`
-	Permalink string  `json:"permalink"`
+	Permalink string        `json:"permalink"`
+	Files     []File        `json:"files,omitempty"`
 }
 
 // SearchChannel is the channel info in a search result.
