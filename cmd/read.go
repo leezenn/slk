@@ -216,12 +216,34 @@ func parseTimeArg(val string) (string, error) {
 		return fmt.Sprintf("%d", ts.Unix()), nil
 	}
 
-	// Absolute: 2024-01-15T14:00
+	// Unix timestamp (raw seconds)
+	if _, err := strconv.ParseFloat(val, 64); err == nil && len(val) >= 9 {
+		// Looks like a unix timestamp (9+ digits). ParseFloat handles both int and float.
+		ts, _ := strconv.ParseInt(val, 10, 64)
+		return fmt.Sprintf("%d", ts), nil
+	}
+
+	// ISO 8601 with timezone: 2024-01-15T14:00:00Z or 2024-01-15T14:00:00+00:00
+	if t, err := time.Parse(time.RFC3339, val); err == nil {
+		return fmt.Sprintf("%d", t.Unix()), nil
+	}
+	// Z suffix without seconds: 2024-01-15T14:00Z
+	if t, err := time.Parse("2006-01-02T15:04Z", val); err == nil {
+		return fmt.Sprintf("%d", t.Unix()), nil
+	}
+
+	// Absolute: 2024-01-15T14:00:00 or 2024-01-15T14:00
+	if t, err := time.Parse("2006-01-02T15:04:05", val); err == nil {
+		return fmt.Sprintf("%d", t.Unix()), nil
+	}
 	if t, err := time.Parse("2006-01-02T15:04", val); err == nil {
 		return fmt.Sprintf("%d", t.Unix()), nil
 	}
 
-	// Absolute: 2024-01-15 14:00 (space separator)
+	// Absolute: 2024-01-15 14:00:00 or 2024-01-15 14:00 (space separator)
+	if t, err := time.Parse("2006-01-02 15:04:05", val); err == nil {
+		return fmt.Sprintf("%d", t.Unix()), nil
+	}
 	if t, err := time.Parse("2006-01-02 15:04", val); err == nil {
 		return fmt.Sprintf("%d", t.Unix()), nil
 	}
@@ -231,7 +253,19 @@ func parseTimeArg(val string) (string, error) {
 		return fmt.Sprintf("%d", t.Unix()), nil
 	}
 
-	return "", fmt.Errorf("unrecognized time format: %s (use 2024-01-15, 2024-01-15T14:00, \"2024-01-15 14:00\", 1h, 2d)", val)
+	// Time only (today): 14:00 or 14:00:00
+	if t, err := time.Parse("15:04:05", val); err == nil {
+		now := time.Now()
+		ts := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.Local)
+		return fmt.Sprintf("%d", ts.Unix()), nil
+	}
+	if t, err := time.Parse("15:04", val); err == nil {
+		now := time.Now()
+		ts := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, time.Local)
+		return fmt.Sprintf("%d", ts.Unix()), nil
+	}
+
+	return "", fmt.Errorf("unrecognized time format: %s (use 2024-01-15, 2024-01-15T14:00, \"2024-01-15 14:00\", 14:00, 1h, 2d, or unix timestamp)", val)
 }
 
 func reverseMessages(msgs []api.Message) {
