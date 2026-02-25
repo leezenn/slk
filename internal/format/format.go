@@ -145,16 +145,18 @@ func FormatMessages(msgs []api.Message, channelName string, resolveUser func(str
 		ts := FormatTimestamp(msg.Ts)
 		resolvedText := ResolveText(msg.Text, resolveUser)
 
-		if channelName != "" {
-			prefix := "#"
-			if strings.HasPrefix(channelName, "@") {
-				prefix = ""
-			}
-			fmt.Fprintf(&b, "%s%s \u2014 %s\n", prefix, channelName, ts)
+		isDM := strings.HasPrefix(channelName, "@")
+		if isDM {
+			// DM: author is the header, no redundant channel name
+			fmt.Fprintf(&b, "@%s \u2014 %s\n", userName, ts)
+			fmt.Fprintf(&b, "  %s\n", resolvedText)
+		} else if channelName != "" {
+			fmt.Fprintf(&b, "#%s \u2014 %s\n", channelName, ts)
+			fmt.Fprintf(&b, "  @%s: %s\n", userName, resolvedText)
 		} else {
 			fmt.Fprintf(&b, "%s\n", ts)
+			fmt.Fprintf(&b, "  @%s: %s\n", userName, resolvedText)
 		}
-		fmt.Fprintf(&b, "  @%s: %s\n", userName, resolvedText)
 
 		// Reactions
 		if len(msg.Reactions) > 0 {
