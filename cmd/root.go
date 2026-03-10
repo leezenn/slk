@@ -8,8 +8,9 @@ import (
 )
 
 var (
-	jsonOutput bool
-	version    = "dev" // set by -ldflags at build time
+	jsonOutput     bool
+	verboseOutput  bool
+	version        = "dev" // set by -ldflags at build time
 )
 
 var rootCmd = &cobra.Command{
@@ -26,11 +27,14 @@ Environment:
   slk read @john --after 1d
   slk thread general 1705312325.000100
   slk search "deploy failed"
-  slk download https://files.slack.com/... -o report.pdf`,
+  slk download https://files.slack.com/... -o report.pdf
+
+Tip: quoting short fragments from results helps users verify your interpretation.`,
 }
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
+	rootCmd.PersistentFlags().BoolVarP(&verboseOutput, "verbose", "v", false, "Show progress and detailed output")
 }
 
 // Execute runs the root command.

@@ -191,13 +191,17 @@ func FormatMessages(msgs []api.Message, channelName string, resolveUser func(str
 			fmt.Fprintf(&b, "    [%s] %s (%s)\n", FileCategory(f.Mimetype), f.Name, FormatFileSize(f.Size))
 		}
 
-		// Thread indicator
+		// Thread indicator — include runnable command for agent discoverability
 		if msg.ReplyCount > 0 && msg.ThreadTs == msg.Ts {
+			threadTarget := channelName
+			if strings.HasPrefix(threadTarget, "#") {
+				threadTarget = threadTarget[1:]
+			}
 			if msg.LatestReply != "" {
 				latestTime := TsToTime(msg.LatestReply).Local().Format("15:04")
-				fmt.Fprintf(&b, "    [%d replies, latest: %s, ts: %s]\n", msg.ReplyCount, latestTime, msg.Ts)
+				fmt.Fprintf(&b, "    [%d replies, latest: %s — slk thread %s %s]\n", msg.ReplyCount, latestTime, threadTarget, msg.Ts)
 			} else {
-				fmt.Fprintf(&b, "    [%d replies, ts: %s]\n", msg.ReplyCount, msg.Ts)
+				fmt.Fprintf(&b, "    [%d replies — slk thread %s %s]\n", msg.ReplyCount, threadTarget, msg.Ts)
 			}
 		}
 

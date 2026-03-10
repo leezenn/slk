@@ -58,23 +58,21 @@ The auth token is sent automatically for private file URLs.`,
 		}
 		defer f.Close()
 
-		// Show progress for files > 1MB
-		if contentLength > 1<<20 {
-			written, err := io.Copy(f, &progressReader{reader: body, total: contentLength})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "\nError writing file: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Fprintf(os.Stderr, "\n")
-			fmt.Printf("Downloaded %s (%d bytes)\n", outputPath, written)
-		} else {
-			written, err := io.Copy(f, body)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("Downloaded %s (%d bytes)\n", outputPath, written)
+		// Show progress for files > 1MB when verbose
+		var reader io.Reader = body
+		if contentLength > 1<<20 && verboseOutput {
+			reader = &progressReader{reader: body, total: contentLength}
 		}
+
+		written, err := io.Copy(f, reader)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nError writing file: %v\n", err)
+			os.Exit(1)
+		}
+		if contentLength > 1<<20 && verboseOutput {
+			fmt.Fprintf(os.Stderr, "\n")
+		}
+		fmt.Printf("Downloaded %s (%d bytes)\n", outputPath, written)
 	},
 }
 
@@ -82,14 +80,18 @@ type progressReader struct {
 	reader  io.Reader
 	total   int64
 	current int64
+	lastPct int
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
 	n, err := pr.reader.Read(p)
 	pr.current += int64(n)
 	if pr.total > 0 {
-		pct := float64(pr.current) / float64(pr.total) * 100
-		fmt.Fprintf(os.Stderr, "\rDownloading... %.0f%%", pct)
+		pct := int(float64(pr.current) / float64(pr.total) * 100)
+		if pct != pr.lastPct {
+			pr.lastPct = pct
+			fmt.Fprintf(os.Stderr, "\rDownloading... %d%%", pct)
+		}
 	}
 	return n, err
 }
