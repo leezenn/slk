@@ -255,10 +255,22 @@ func (c *Client) post(method string, params url.Values) ([]byte, error) {
 		return nil, fmt.Errorf("parsing response: %w", err)
 	}
 	if !base.OK {
+		if isAuthError(base.Error) {
+			return nil, fmt.Errorf("slack API error: %s\n\nYour token needs refreshing. Get a new one from https://api.slack.com/apps\n(OAuth & Permissions → User OAuth Token) then run: slk auth xoxp-...", base.Error)
+		}
 		return nil, fmt.Errorf("slack API error: %s", base.Error)
 	}
 
 	return body, nil
+}
+
+// isAuthError returns true for Slack API errors indicating an invalid or expired token.
+func isAuthError(code string) bool {
+	switch code {
+	case "token_revoked", "token_expired", "invalid_auth", "account_inactive", "not_authed":
+		return true
+	}
+	return false
 }
 
 // doWithRetry executes a request with rate-limit retry.
