@@ -39,8 +39,20 @@ func ResolveText(text string, resolveUser func(string) string) string {
 		return match
 	})
 
-	// Resolve URL links: <http://example.com|Display Text> -> Display Text
-	text = urlLinkRe.ReplaceAllString(text, "$2")
+	// Resolve URL links: <http://example.com|Display Text>
+	// Keep full URL when display text is a truncated URL (Slack truncates with …)
+	text = urlLinkRe.ReplaceAllStringFunc(text, func(match string) string {
+		parts := urlLinkRe.FindStringSubmatch(match)
+		if len(parts) < 3 {
+			return match
+		}
+		url, display := parts[1], parts[2]
+		// If display text looks like a (truncated) URL, use the full URL
+		if strings.HasPrefix(display, "http") || strings.HasSuffix(display, "…") || strings.HasSuffix(display, "...") {
+			return url
+		}
+		return display
+	})
 
 	// Resolve bare URLs: <http://example.com> -> http://example.com
 	text = bareURLRe.ReplaceAllString(text, "$1")
