@@ -34,6 +34,11 @@ parent message (visible in Slack message URLs or from the read command).`,
 		}
 
 		client := api.NewClient(result.Token)
+		selfID, err := identifySelf(client)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		if err := client.BuildUserCache(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: user cache unavailable: %v\n", err)
 		}
@@ -52,7 +57,7 @@ parent message (visible in Slack message URLs or from the read command).`,
 		}
 
 		if jsonOutput {
-			jsonMsgs := format.MessagesToJSON(msgs, client.ResolveUser)
+			jsonMsgs := format.MessagesToJSON(msgs, client.ResolveUser, selfID)
 			out, err := format.FormatJSON(map[string]interface{}{
 				"ok":        true,
 				"channel":   channelName,
@@ -67,7 +72,7 @@ parent message (visible in Slack message URLs or from the read command).`,
 			return
 		}
 
-		fmt.Print(format.FormatMessages(msgs, channelName, client.ResolveUser))
+		fmt.Print(format.FormatMessages(msgs, channelName, client.ResolveUser, selfID))
 	},
 }
 

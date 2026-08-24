@@ -51,6 +51,11 @@ relative durations (1h, 2d, 30m, 60s).`,
 		}
 
 		client := api.NewClient(result.Token)
+		selfID, err := identifySelf(client)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 		// Build user cache for mention resolution
 		if err := client.BuildUserCache(); err != nil {
@@ -138,7 +143,7 @@ relative durations (1h, 2d, 30m, 60s).`,
 		reverseMessages(msgs)
 
 		if jsonOutput {
-			jsonMsgs := format.MessagesToJSON(msgs, client.ResolveUser)
+			jsonMsgs := format.MessagesToJSON(msgs, client.ResolveUser, selfID)
 			out, err := format.FormatJSON(map[string]interface{}{
 				"ok":       true,
 				"channel":  channelName,
@@ -152,7 +157,7 @@ relative durations (1h, 2d, 30m, 60s).`,
 			return
 		}
 
-		fmt.Print(format.FormatMessages(msgs, channelName, client.ResolveUser))
+		fmt.Print(format.FormatMessages(msgs, channelName, client.ResolveUser, selfID))
 	},
 }
 

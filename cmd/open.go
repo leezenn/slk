@@ -77,6 +77,11 @@ preceding messages for context. Supports both channel messages and thread replie
 		}
 
 		client := api.NewClient(result.Token)
+		selfID, err := identifySelf(client)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		if err := client.BuildUserCache(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: user cache unavailable: %v\n", err)
 		}
@@ -140,7 +145,7 @@ preceding messages for context. Supports both channel messages and thread replie
 		}
 
 		if jsonOutput {
-			jsonMsgs := format.MessagesToJSON(msgs, client.ResolveUser)
+			jsonMsgs := format.MessagesToJSON(msgs, client.ResolveUser, selfID)
 			payload := map[string]interface{}{
 				"ok":       true,
 				"channel":  channelName,
@@ -159,7 +164,7 @@ preceding messages for context. Supports both channel messages and thread replie
 			return
 		}
 
-		fmt.Print(format.FormatMessages(msgs, channelName, client.ResolveUser))
+		fmt.Print(format.FormatMessages(msgs, channelName, client.ResolveUser, selfID))
 	},
 }
 

@@ -131,8 +131,72 @@ func FileCategory(mimetype string) string {
 	return "file"
 }
 
+func markSelf(name, userID, selfID string) string {
+	if selfID != "" && userID == selfID {
+		return name + " (me)"
+	}
+	return name
+}
+
+// FileDownloadCommand returns a runnable command for a Slack attachment.
+func FileDownloadCommand(file api.File) string {
+	if file.ID == "" {
+		return ""
+	}
+	return "slk download " + file.ID
+}
+
+// FileDownloadHint returns a human-readable runnable command suffix.
+func FileDownloadHint(file api.File) string {
+	command := FileDownloadCommand(file)
+	if command == "" {
+		return ""
+	}
+	return " — " + command
+}
+
+// FileJSON is the public attachment representation. Private Slack URLs remain
+// internal to the API client and are intentionally excluded.
+type FileJSON struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Size            int64  `json:"size"`
+	Mimetype        string `json:"mimetype"`
+	Filetype        string `json:"filetype"`
+	PrettyType      string `json:"pretty_type"`
+	DownloadCommand string `json:"download_command,omitempty"`
+}
+
+// FileToJSON converts Slack file metadata into the public attachment contract.
+func FileToJSON(file api.File) FileJSON {
+	return FileJSON{
+		ID:              file.ID,
+		Name:            file.Name,
+		Size:            file.Size,
+		Mimetype:        file.Mimetype,
+		Filetype:        file.Filetype,
+		PrettyType:      file.PrettyType,
+		DownloadCommand: FileDownloadCommand(file),
+	}
+}
+
+func filesToJSON(files []api.File) []FileJSON {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]FileJSON, len(files))
+	for i, file := range files {
+		out[i] = FileToJSON(file)
+	}
+	return out
+}
+
+func writeFileLine(b *strings.Builder, file api.File) {
+	fmt.Fprintf(b, "    [%s] %s (%s)%s\n", FileCategory(file.Mimetype), file.Name, FormatFileSize(file.Size), FileDownloadHint(file))
+}
+
 // FormatMessages formats messages for human-readable output.
-func FormatMessages(msgs []api.Message, channelName string, resolveUser func(string) string) string {
+func FormatMessages(msgs []api.Message, channelName string, resolveUser func(string) string, selfID string) string {
 	if len(msgs) == 0 {
 		return "No messages found.\n"
 	}
@@ -156,18 +220,19 @@ func FormatMessages(msgs []api.Message, channelName string, resolveUser func(str
 
 		ts := FormatTimestamp(msg.Ts)
 		resolvedText := ResolveText(msg.Text, resolveUser)
+		author := markSelf(userName, msg.User, selfID)
 
 		isDM := strings.HasPrefix(channelName, "@")
 		if isDM {
 			// DM: author is the header, no redundant channel name
-			fmt.Fprintf(&b, "@%s \u2014 %s\n", userName, ts)
+			fmt.Fprintf(&b, "@%s \u2014 %s\n", author, ts)
 			fmt.Fprintf(&b, "  %s\n", resolvedText)
 		} else if channelName != "" {
 			fmt.Fprintf(&b, "#%s \u2014 %s\n", channelName, ts)
-			fmt.Fprintf(&b, "  @%s: %s\n", userName, resolvedText)
+			fmt.Fprintf(&b, "  @%s: %s\n", author, resolvedText)
 		} else {
 			fmt.Fprintf(&b, "%s\n", ts)
-			fmt.Fprintf(&b, "  @%s: %s\n", userName, resolvedText)
+			fmt.Fprintf(&b, "  @%s: %s\n", author, resolvedText)
 		}
 
 		// Reactions
@@ -199,8 +264,8 @@ func FormatMessages(msgs []api.Message, channelName string, resolveUser func(str
 		}
 
 		// Files
-		for _, f := range msg.Files {
-			fmt.Fprintf(&b, "    [%s] %s (%s)\n", FileCategory(f.Mimetype), f.Name, FormatFileSize(f.Size))
+		for _, file := range msg.Files {
+			writeFileLine(&b, file)
 		}
 
 		// Thread indicator — include runnable command for agent discoverability
@@ -317,7 +382,7 @@ func FormatUsers(users []api.User) string {
 }
 
 // FormatSearchResults formats search results for human-readable output.
-func FormatSearchResults(result *api.SearchResult, resolveUser func(string) string) string {
+func FormatSearchResults(result *api.SearchResult, resolveUser func(string) string, selfID string) string {
 	if result == nil || len(result.Messages.Matches) == 0 {
 		return "No results found.\n"
 	}
@@ -339,11 +404,12 @@ func FormatSearchResults(result *api.SearchResult, resolveUser func(string) stri
 		if author == m.User && m.Username != "" {
 			author = m.Username
 		}
+		author = markSelf(author, m.User, selfID)
 		fmt.Fprintf(&b, "  @%s: %s\n", author, text)
 
 		// Files
-		for _, f := range m.Files {
-			fmt.Fprintf(&b, "    [%s] %s (%s)\n", FileCategory(f.Mimetype), f.Name, FormatFileSize(f.Size))
+		for _, file := range m.Files {
+			writeFileLine(&b, file)
 		}
 
 		b.WriteString("\n")
@@ -371,17 +437,18 @@ func FormatJSON(data interface{}) (string, error) {
 type MessageJSON struct {
 	User       string         `json:"user"`
 	UserID     string         `json:"user_id"`
+	IsSelf     bool           `json:"is_self"`
 	Text       string         `json:"text"`
 	Ts         string         `json:"ts"`
 	Timestamp  string         `json:"timestamp"`
 	ThreadTs   string         `json:"thread_ts,omitempty"`
 	ReplyCount int            `json:"reply_count,omitempty"`
 	Reactions  []api.Reaction `json:"reactions,omitempty"`
-	Files      []api.File     `json:"files,omitempty"`
+	Files      []FileJSON     `json:"files,omitempty"`
 }
 
 // MessagesToJSON converts messages to JSON-friendly structs.
-func MessagesToJSON(msgs []api.Message, resolveUser func(string) string) []MessageJSON {
+func MessagesToJSON(msgs []api.Message, resolveUser func(string) string, selfID string) []MessageJSON {
 	var out []MessageJSON
 	for _, msg := range msgs {
 		// Skip messages without text content AND without files
@@ -399,13 +466,46 @@ func MessagesToJSON(msgs []api.Message, resolveUser func(string) string) []Messa
 		out = append(out, MessageJSON{
 			User:       userName,
 			UserID:     msg.User,
+			IsSelf:     selfID != "" && msg.User == selfID,
 			Text:       msg.Text,
 			Ts:         msg.Ts,
 			Timestamp:  t.UTC().Format(time.RFC3339),
 			ThreadTs:   msg.ThreadTs,
 			ReplyCount: msg.ReplyCount,
 			Reactions:  msg.Reactions,
-			Files:      msg.Files,
+			Files:      filesToJSON(msg.Files),
+		})
+	}
+	return out
+}
+
+// SearchMatchJSON is the JSON representation of a search result with identity metadata.
+type SearchMatchJSON struct {
+	Type      string            `json:"type"`
+	User      string            `json:"user"`
+	Username  string            `json:"username"`
+	IsSelf    bool              `json:"is_self"`
+	Text      string            `json:"text"`
+	Ts        string            `json:"ts"`
+	Channel   api.SearchChannel `json:"channel"`
+	Permalink string            `json:"permalink"`
+	Files     []FileJSON        `json:"files,omitempty"`
+}
+
+// SearchMatchesToJSON adds authenticated-user identity metadata to search matches.
+func SearchMatchesToJSON(matches []api.SearchMatch, selfID string) []SearchMatchJSON {
+	out := make([]SearchMatchJSON, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, SearchMatchJSON{
+			Type:      match.Type,
+			User:      match.User,
+			Username:  match.Username,
+			IsSelf:    selfID != "" && match.User == selfID,
+			Text:      match.Text,
+			Ts:        match.Ts,
+			Channel:   match.Channel,
+			Permalink: match.Permalink,
+			Files:     filesToJSON(match.Files),
 		})
 	}
 	return out

@@ -36,6 +36,11 @@ Slack's search.messages API is only available with user tokens.`,
 		}
 
 		client := api.NewClient(result.Token)
+		selfID, err := identifySelf(client)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		if err := client.BuildUserCache(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: user cache unavailable, from:@ resolution disabled: %v\n", err)
 		}
@@ -57,7 +62,7 @@ Slack's search.messages API is only available with user tokens.`,
 			out, err := format.FormatJSON(map[string]interface{}{
 				"ok":      true,
 				"total":   searchResult.Messages.Total,
-				"matches": searchResult.Messages.Matches,
+				"matches": format.SearchMatchesToJSON(searchResult.Messages.Matches, selfID),
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -67,7 +72,7 @@ Slack's search.messages API is only available with user tokens.`,
 			return
 		}
 
-		fmt.Print(format.FormatSearchResults(searchResult, client.ResolveUser))
+		fmt.Print(format.FormatSearchResults(searchResult, client.ResolveUser, selfID))
 	},
 }
 

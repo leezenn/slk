@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -102,19 +103,19 @@ type ResponseMetadata struct {
 
 // Channel represents a Slack conversation.
 type Channel struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	IsChannel    bool    `json:"is_channel"`
-	IsGroup      bool    `json:"is_group"`
-	IsIM         bool    `json:"is_im"`
-	IsMpIM       bool    `json:"is_mpim"`
-	IsPrivate    bool    `json:"is_private"`
-	IsArchived   bool    `json:"is_archived"`
-	NumMembers   int     `json:"num_members"`
-	User         string  `json:"user,omitempty"` // for DMs, the other user
-	Topic        Topic   `json:"topic,omitempty"`
-	Purpose      Purpose `json:"purpose,omitempty"`
-	NameNorm     string  `json:"name_normalized"`
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	IsChannel  bool    `json:"is_channel"`
+	IsGroup    bool    `json:"is_group"`
+	IsIM       bool    `json:"is_im"`
+	IsMpIM     bool    `json:"is_mpim"`
+	IsPrivate  bool    `json:"is_private"`
+	IsArchived bool    `json:"is_archived"`
+	NumMembers int     `json:"num_members"`
+	User       string  `json:"user,omitempty"` // for DMs, the other user
+	Topic      Topic   `json:"topic,omitempty"`
+	Purpose    Purpose `json:"purpose,omitempty"`
+	NameNorm   string  `json:"name_normalized"`
 }
 
 // Topic is a channel topic.
@@ -129,18 +130,18 @@ type Purpose struct {
 
 // Message represents a Slack message.
 type Message struct {
-	Type       string     `json:"type"`
-	Subtype    string     `json:"subtype,omitempty"`
-	User       string     `json:"user,omitempty"`
-	BotID      string     `json:"bot_id,omitempty"`
-	Text       string     `json:"text"`
-	Ts         string     `json:"ts"`
-	ThreadTs   string     `json:"thread_ts,omitempty"`
+	Type        string     `json:"type"`
+	Subtype     string     `json:"subtype,omitempty"`
+	User        string     `json:"user,omitempty"`
+	BotID       string     `json:"bot_id,omitempty"`
+	Text        string     `json:"text"`
+	Ts          string     `json:"ts"`
+	ThreadTs    string     `json:"thread_ts,omitempty"`
 	ReplyCount  int        `json:"reply_count,omitempty"`
 	LatestReply string     `json:"latest_reply,omitempty"`
 	Reactions   []Reaction `json:"reactions,omitempty"`
-	Files      []File     `json:"files,omitempty"`
-	Username   string     `json:"username,omitempty"` // bot username
+	Files       []File     `json:"files,omitempty"`
+	Username    string     `json:"username,omitempty"` // bot username
 }
 
 // Reaction on a message.
@@ -175,12 +176,12 @@ type User struct {
 
 // UserProfile is the profile section of a user.
 type UserProfile struct {
-	DisplayName      string `json:"display_name"`
-	RealName         string `json:"real_name"`
-	Title            string `json:"title"`
-	StatusEmoji      string `json:"status_emoji"`
-	StatusText       string `json:"status_text"`
-	Image48          string `json:"image_48"`
+	DisplayName string `json:"display_name"`
+	RealName    string `json:"real_name"`
+	Title       string `json:"title"`
+	StatusEmoji string `json:"status_emoji"`
+	StatusText  string `json:"status_text"`
+	Image48     string `json:"image_48"`
 }
 
 // ReactionsListItem is an item from reactions.list.
@@ -197,9 +198,9 @@ type SearchResult struct {
 
 // SearchMessages wraps search message matches.
 type SearchMessages struct {
-	Total   int              `json:"total"`
-	Matches []SearchMatch    `json:"matches"`
-	Paging  SearchPaging     `json:"paging"`
+	Total   int           `json:"total"`
+	Matches []SearchMatch `json:"matches"`
+	Paging  SearchPaging  `json:"paging"`
 }
 
 // SearchMatch is a single search result match.
@@ -275,6 +276,10 @@ func isAuthError(code string) bool {
 
 // doWithRetry executes a request with rate-limit retry.
 func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
+	return c.doWithRetryClient(c.httpClient, req)
+}
+
+func (c *Client) doWithRetryClient(httpClient *http.Client, req *http.Request) (*http.Response, error) {
 	maxRetries := 5
 	for i := 0; i < maxRetries; i++ {
 		// Clone request body for retries
@@ -284,8 +289,11 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 			req.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
 		}
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
+			if resp != nil && resp.Body != nil {
+				resp.Body.Close()
+			}
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 
@@ -464,7 +472,7 @@ func (c *Client) GetHistoryAfter(channelID string, limit int, oldest string) ([]
 			"channel":   {channelID},
 			"limit":     {strconv.Itoa(pageLimit)},
 			"oldest":    {oldest},
-			"inclusive":  {"true"},
+			"inclusive": {"true"},
 		}
 		if cursor != "" {
 			params.Set("cursor", cursor)
@@ -506,7 +514,7 @@ func (c *Client) GetMessage(channelID, ts string) (*Message, error) {
 		"oldest":    {ts},
 		"latest":    {ts},
 		"limit":     {"1"},
-		"inclusive":  {"true"},
+		"inclusive": {"true"},
 	}
 
 	body, err := c.post("conversations.history", params)
@@ -847,22 +855,90 @@ func (c *Client) ResolveDisplayNameToUsername(displayName string) string {
 	return user.Name
 }
 
-// DownloadFile downloads a file from a Slack URL.
+// GetFileInfo retrieves metadata for a Slack file ID.
+func (c *Client) GetFileInfo(fileID string) (*File, error) {
+	body, err := c.post("files.info", url.Values{"file": {fileID}})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		SlackResponse
+		File File `json:"file"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parsing files.info: %w", err)
+	}
+	return &resp.File, nil
+}
+
+func validateSlackFileURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.New("invalid Slack file URL")
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("refusing Slack file URL with non-HTTPS scheme %q", parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("refusing Slack file URL containing user information")
+	}
+	if port := parsed.Port(); port != "" && port != "443" {
+		return fmt.Errorf("refusing Slack file URL using port %s", port)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "slack.com" && !strings.HasSuffix(host, ".slack.com") {
+		return fmt.Errorf("refusing non-Slack file host %q", host)
+	}
+	return nil
+}
+
+func sanitizeDownloadRequestError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err == nil {
+			return errors.New("request failed")
+		}
+		return fmt.Errorf("request failed: %w", urlErr.Err)
+	}
+	return fmt.Errorf("request failed: %w", err)
+}
+
+// DownloadFile downloads a file from a trusted Slack URL.
 func (c *Client) DownloadFile(fileURL string) (io.ReadCloser, int64, error) {
+	if err := validateSlackFileURL(fileURL); err != nil {
+		return nil, 0, err
+	}
+
 	req, err := http.NewRequest("GET", fileURL, nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, errors.New("creating Slack file request")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, 0, err
+	downloadClient := &http.Client{
+		Transport: c.httpClient.Transport,
+		Timeout:   c.httpClient.Timeout,
+		Jar:       c.httpClient.Jar,
+	}
+	downloadClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 Slack file redirects")
+		}
+		if err := validateSlackFileURL(req.URL.String()); err != nil {
+			return fmt.Errorf("refusing Slack file redirect: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		return nil
 	}
 
-	if resp.StatusCode != 200 {
+	resp, err := c.doWithRetryClient(downloadClient, req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("downloading Slack file: %w", sanitizeDownloadRequestError(err))
+	}
+	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, 0, fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+		return nil, 0, fmt.Errorf("downloading Slack file: HTTP %s", resp.Status)
 	}
 
 	return resp.Body, resp.ContentLength, nil
