@@ -52,6 +52,86 @@ func TestAuthTestUsesConfiguredContextAndReturnsScopes(t *testing.T) {
 	}
 }
 
+func TestPostReplyAndGetPermalink(t *testing.T) {
+	const (
+		channelID = "C12345678"
+		threadTs  = "1700000000.000001"
+		replyTs   = "1700000001.000002"
+		text      = "We found the issue and will ship the fix tomorrow."
+		permalink = "https://example.slack.com/archives/C12345678/p1700000001000002?thread_ts=1700000000.000001&cid=C12345678"
+	)
+
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := req.ParseForm(); err != nil {
+			t.Fatalf("parsing request form: %v", err)
+		}
+		var body string
+		switch req.URL.Path {
+		case "/api/chat.postMessage":
+			if got := req.Form.Get("channel"); got != channelID {
+				t.Fatalf("post channel = %q, want %q", got, channelID)
+			}
+			if got := req.Form.Get("thread_ts"); got != threadTs {
+				t.Fatalf("post thread_ts = %q, want %q", got, threadTs)
+			}
+			if got := req.Form.Get("text"); got != text {
+				t.Fatalf("post text = %q, want %q", got, text)
+			}
+			body = `{"ok":true,"channel":"` + channelID + `","ts":"` + replyTs + `"}`
+		case "/api/chat.getPermalink":
+			if got := req.Form.Get("channel"); got != channelID {
+				t.Fatalf("permalink channel = %q, want %q", got, channelID)
+			}
+			if got := req.Form.Get("message_ts"); got != replyTs {
+				t.Fatalf("permalink message_ts = %q, want %q", got, replyTs)
+			}
+			body = `{"ok":true,"permalink":"` + permalink + `"}`
+		default:
+			t.Fatalf("unexpected Slack method path %q", req.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	posted, err := client.PostReply(channelID, threadTs, text)
+	if err != nil {
+		t.Fatalf("PostReply returned error: %v", err)
+	}
+	if posted.Channel != channelID || posted.Ts != replyTs {
+		t.Fatalf("posted result = %#v", posted)
+	}
+	gotPermalink, err := client.GetPermalink(posted.Channel, posted.Ts)
+	if err != nil {
+		t.Fatalf("GetPermalink returned error: %v", err)
+	}
+	if gotPermalink != permalink {
+		t.Fatalf("permalink = %q, want %q", gotPermalink, permalink)
+	}
+}
+
+func TestPostReplyReturnsTypedSlackRejection(t *testing.T) {
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":false,"error":"missing_scope"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	_, err := client.PostReply("C12345678", "1700000000.000001", "hello")
+	var methodErr *MethodError
+	if !errors.As(err, &methodErr) || methodErr.Code != "missing_scope" {
+		t.Fatalf("PostReply error = %v, want typed missing_scope", err)
+	}
+}
+
 func TestValidateSlackFileURL(t *testing.T) {
 	tests := []struct {
 		name    string

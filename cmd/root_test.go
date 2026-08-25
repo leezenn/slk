@@ -96,7 +96,7 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 
 var commandNames = []string{
 	"auth", "channels", "download", "members", "notes", "open",
-	"read", "search", "thread", "users", "whoami",
+	"read", "reply", "search", "thread", "users", "whoami",
 }
 
 func TestNewRootCommandBuildsFreshRunECommands(t *testing.T) {
@@ -197,6 +197,9 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		{name: "notes shape", args: []string{"notes", "extra"}},
 		{name: "open shape", args: []string{"open"}},
 		{name: "read shape", args: []string{"read"}},
+		{name: "reply shape", args: []string{"reply"}},
+		{name: "reply text", args: []string{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100"}},
+		{name: "reply permalink", args: []string{"reply", "not-a-permalink", "--text", "hello"}},
 		{name: "search shape", args: []string{"search"}},
 		{name: "thread shape", args: []string{"thread", "general"}},
 		{name: "users shape", args: []string{"users", "one", "two"}},
@@ -239,7 +242,9 @@ func TestCanceledContextStopsEveryCommandBeforeDependencies(t *testing.T) {
 	tests := [][]string{
 		{"auth"}, {"channels"}, {"download", "F0123456789"}, {"members", "general"},
 		{"notes"}, {"open", "https://workspace.slack.com/archives/C12345678/p1705312325000100"},
-		{"read", "general"}, {"search", "query"}, {"thread", "general", "1705312325.000100"},
+		{"read", "general"},
+		{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--text", "hello"},
+		{"search", "query"}, {"thread", "general", "1705312325.000100"},
 		{"users"}, {"whoami"},
 	}
 	for _, args := range tests {

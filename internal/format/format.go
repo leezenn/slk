@@ -409,7 +409,7 @@ func FormatSearchResults(result *api.SearchResult, resolveUser func(string) stri
 		for _, file := range m.Files {
 			writeFileLine(&b, file)
 		}
-		if command := searchOpenCommand(m.Permalink); command != "" {
+		if command := OpenCommand(m.Permalink); command != "" {
 			fmt.Fprintf(&b, "    [open context — %s]\n", command)
 		}
 
@@ -494,7 +494,8 @@ type SearchMatchJSON struct {
 	Files       []FileJSON        `json:"files,omitempty"`
 }
 
-func searchOpenCommand(permalink string) string {
+// OpenCommand returns a safely quoted command for inspecting a Slack permalink.
+func OpenCommand(permalink string) string {
 	if permalink == "" {
 		return ""
 	}
@@ -514,7 +515,7 @@ func SearchMatchesToJSON(matches []api.SearchMatch, selfID string) []SearchMatch
 			Ts:          match.Ts,
 			Channel:     match.Channel,
 			Permalink:   match.Permalink,
-			OpenCommand: searchOpenCommand(match.Permalink),
+			OpenCommand: OpenCommand(match.Permalink),
 			Files:       filesToJSON(match.Files),
 		})
 	}

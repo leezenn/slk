@@ -22,10 +22,10 @@ func NewRootCommand(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{
 		Version:       version,
 		Use:           "slk",
-		Short:         "Read Slack channels, DMs, threads, and files from the command line",
+		Short:         "Read Slack context and reply to message threads",
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Long: `Read Slack channels, DMs, threads, and files from the command line.
+		Long: `Read Slack channels, DMs, threads, and files, and reply to message threads.
 
 Environment:
   SLACK_TOKEN  Fallback token if keychain is not configured`,
@@ -37,6 +37,7 @@ Environment:
   slk thread general 1705312325.000100
   slk search "deploy failed"
   slk download F0123456789
+  slk reply '<slack-permalink>' --text 'We will ship the fix tomorrow.'
 
 Tip: quoting short fragments from results helps users verify your interpretation.`,
 	}
@@ -51,6 +52,7 @@ Tip: quoting short fragments from results helps users verify your interpretation
 		newNotesCommand(deps, options),
 		newOpenCommand(deps, options),
 		newReadCommand(deps, options),
+		newReplyCommand(deps, options),
 		newSearchCommand(deps, options),
 		newThreadCommand(deps, options),
 		newUsersCommand(deps, options),

@@ -136,14 +136,22 @@ func authAccessSummary(scopes []string) []string {
 		}
 	}
 
+	var summary []string
 	if len(missingFeatures) == 0 {
-		return []string{"Access: verified for all current slk read features."}
+		summary = append(summary, "Access: verified for all current slk read features.")
+	} else {
+		summary = append(summary,
+			"Access is limited: "+humanList(missingFeatures)+" may not work.",
+			"Missing Slack scopes: "+strings.Join(missingScopes, ", ")+".",
+			"Update the Slack app permissions, reinstall it, then run 'slk auth --interactive'.",
+		)
 	}
-	return []string{
-		"Access is limited: " + humanList(missingFeatures) + " may not work.",
-		"Missing Slack scopes: " + strings.Join(missingScopes, ", ") + ".",
-		"Update the Slack app permissions, reinstall it, then run 'slk auth --interactive'.",
+	if granted["chat:write"] {
+		summary = append(summary, "Writing: thread replies are available.")
+	} else {
+		summary = append(summary, "Writing: thread replies require chat:write.")
 	}
+	return summary
 }
 
 func humanList(values []string) string {
@@ -180,6 +188,7 @@ func guidedSetup(cmd *cobra.Command, deps Dependencies, store auth.Store, reconn
 	fmt.Fprintln(out, "     channels:history, channels:read, groups:history, groups:read,")
 	fmt.Fprintln(out, "     im:history, im:read, mpim:history, mpim:read,")
 	fmt.Fprintln(out, "     reactions:read, search:read, users:read, files:read")
+	fmt.Fprintln(out, "     Optional for thread replies: chat:write")
 	fmt.Fprintln(out, "  3. Install to Workspace -> Copy User OAuth Token")
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Token will be stored in %s.\n", credStoreName())

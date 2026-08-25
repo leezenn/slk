@@ -136,6 +136,18 @@ type SlackResponse struct {
 	ResponseMetadata ResponseMetadata `json:"response_metadata,omitempty"`
 }
 
+// MethodError is a definite Slack Web API rejection.
+type MethodError struct {
+	Code string
+}
+
+func (e *MethodError) Error() string {
+	if isAuthError(e.Code) {
+		return fmt.Sprintf("slack API error: %s\n\nYour token needs refreshing. Get a new one from https://api.slack.com/apps\n(OAuth & Permissions → User OAuth Token) then run: slk auth xoxp-...", e.Code)
+	}
+	return "slack API error: " + e.Code
+}
+
 // ResponseMetadata holds pagination cursors.
 type ResponseMetadata struct {
 	NextCursor string `json:"next_cursor"`
@@ -301,10 +313,7 @@ func (c *Client) postWithHeaders(method string, params url.Values) ([]byte, http
 		return nil, nil, fmt.Errorf("parsing response: %w", err)
 	}
 	if !base.OK {
-		if isAuthError(base.Error) {
-			return nil, nil, fmt.Errorf("slack API error: %s\n\nYour token needs refreshing. Get a new one from https://api.slack.com/apps\n(OAuth & Permissions → User OAuth Token) then run: slk auth xoxp-...", base.Error)
-		}
-		return nil, nil, fmt.Errorf("slack API error: %s", base.Error)
+		return nil, nil, &MethodError{Code: base.Error}
 	}
 
 	return body, resp.Header.Clone(), nil
@@ -678,6 +687,53 @@ func (c *Client) SearchMessages(query string, limit int) (*SearchResult, error) 
 	}
 
 	return &SearchResult{Messages: resp.Messages}, nil
+}
+
+// PostMessageResult identifies a message Slack accepted.
+type PostMessageResult struct {
+	Channel string `json:"channel"`
+	Ts      string `json:"ts"`
+}
+
+// PostReply posts one message into an existing thread.
+func (c *Client) PostReply(channelID, threadTs, text string) (*PostMessageResult, error) {
+	body, err := c.post("chat.postMessage", url.Values{
+		"channel":   {channelID},
+		"thread_ts": {threadTs},
+		"text":      {text},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var result PostMessageResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parsing chat.postMessage: %w", err)
+	}
+	if result.Channel == "" || result.Ts == "" {
+		return nil, fmt.Errorf("parsing chat.postMessage: successful response omitted channel or timestamp")
+	}
+	return &result, nil
+}
+
+// GetPermalink returns Slack's canonical permalink for a message.
+func (c *Client) GetPermalink(channelID, messageTs string) (string, error) {
+	body, err := c.post("chat.getPermalink", url.Values{
+		"channel":    {channelID},
+		"message_ts": {messageTs},
+	})
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		Permalink string `json:"permalink"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parsing chat.getPermalink: %w", err)
+	}
+	if result.Permalink == "" {
+		return "", fmt.Errorf("parsing chat.getPermalink: successful response omitted permalink")
+	}
+	return result.Permalink, nil
 }
 
 // ReactionsList returns items the authenticated user has reacted to.
