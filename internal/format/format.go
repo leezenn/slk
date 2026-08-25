@@ -409,6 +409,9 @@ func FormatSearchResults(result *api.SearchResult, resolveUser func(string) stri
 		for _, file := range m.Files {
 			writeFileLine(&b, file)
 		}
+		if command := searchOpenCommand(m.Permalink); command != "" {
+			fmt.Fprintf(&b, "    [open context — %s]\n", command)
+		}
 
 		b.WriteString("\n")
 	}
@@ -479,15 +482,23 @@ func MessagesToJSON(msgs []api.Message, resolveUser func(string) string, selfID 
 
 // SearchMatchJSON is the JSON representation of a search result with identity metadata.
 type SearchMatchJSON struct {
-	Type      string            `json:"type"`
-	User      string            `json:"user"`
-	Username  string            `json:"username"`
-	IsSelf    bool              `json:"is_self"`
-	Text      string            `json:"text"`
-	Ts        string            `json:"ts"`
-	Channel   api.SearchChannel `json:"channel"`
-	Permalink string            `json:"permalink"`
-	Files     []FileJSON        `json:"files,omitempty"`
+	Type        string            `json:"type"`
+	User        string            `json:"user"`
+	Username    string            `json:"username"`
+	IsSelf      bool              `json:"is_self"`
+	Text        string            `json:"text"`
+	Ts          string            `json:"ts"`
+	Channel     api.SearchChannel `json:"channel"`
+	Permalink   string            `json:"permalink"`
+	OpenCommand string            `json:"open_command,omitempty"`
+	Files       []FileJSON        `json:"files,omitempty"`
+}
+
+func searchOpenCommand(permalink string) string {
+	if permalink == "" {
+		return ""
+	}
+	return "slk open '" + strings.ReplaceAll(permalink, "'", "'\\''") + "'"
 }
 
 // SearchMatchesToJSON adds authenticated-user identity metadata to search matches.
@@ -495,15 +506,16 @@ func SearchMatchesToJSON(matches []api.SearchMatch, selfID string) []SearchMatch
 	out := make([]SearchMatchJSON, 0, len(matches))
 	for _, match := range matches {
 		out = append(out, SearchMatchJSON{
-			Type:      match.Type,
-			User:      match.User,
-			Username:  match.Username,
-			IsSelf:    selfID != "" && match.User == selfID,
-			Text:      match.Text,
-			Ts:        match.Ts,
-			Channel:   match.Channel,
-			Permalink: match.Permalink,
-			Files:     filesToJSON(match.Files),
+			Type:        match.Type,
+			User:        match.User,
+			Username:    match.Username,
+			IsSelf:      selfID != "" && match.User == selfID,
+			Text:        match.Text,
+			Ts:          match.Ts,
+			Channel:     match.Channel,
+			Permalink:   match.Permalink,
+			OpenCommand: searchOpenCommand(match.Permalink),
+			Files:       filesToJSON(match.Files),
 		})
 	}
 	return out

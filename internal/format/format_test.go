@@ -104,14 +104,16 @@ func TestMessagesToJSONSetsIdentityAndDownloadCommand(t *testing.T) {
 }
 
 func TestFormatSearchResultsMarksAuthenticatedUser(t *testing.T) {
+	const permalink = "https://example.slack.com/archives/C12345678/p1700000000000000?thread_ts=1700000000.000000&cid=C12345678"
 	result := &api.SearchResult{}
 	result.Messages.Total = 2
 	result.Messages.Matches = []api.SearchMatch{
 		{
-			User:    testSelfID,
-			Text:    "mine",
-			Ts:      "1700000000.000000",
-			Channel: api.SearchChannel{Name: "general"},
+			User:      testSelfID,
+			Text:      "mine",
+			Ts:        "1700000000.000000",
+			Channel:   api.SearchChannel{Name: "general"},
+			Permalink: permalink,
 			Files: []api.File{
 				{ID: "F12345678", Name: "report.pdf", Size: 1024, Mimetype: "application/pdf"},
 			},
@@ -129,13 +131,18 @@ func TestFormatSearchResultsMarksAuthenticatedUser(t *testing.T) {
 	if !strings.Contains(got, "[pdf] report.pdf (1.0KB) — slk download F12345678") {
 		t.Fatalf("search attachment did not include a runnable download command:\n%s", got)
 	}
+	if !strings.Contains(got, "[open context — slk open '"+permalink+"']") {
+		t.Fatalf("search result did not include a safely quoted context command:\n%s", got)
+	}
 }
 
 func TestSearchMatchesToJSONSetsIdentityAndDownloadCommand(t *testing.T) {
+	const permalink = "https://example.slack.com/archives/C12345678/p1700000000000000"
 	matches := []api.SearchMatch{
 		{
-			User: testSelfID,
-			Text: "mine",
+			User:      testSelfID,
+			Text:      "mine",
+			Permalink: permalink,
 			Files: []api.File{
 				{ID: "F12345678", Name: "report.pdf"},
 			},
@@ -155,5 +162,11 @@ func TestSearchMatchesToJSONSetsIdentityAndDownloadCommand(t *testing.T) {
 	}
 	if got[0].Files[0].DownloadCommand != "slk download F12345678" {
 		t.Fatalf("download_command = %q, want runnable file-ID command", got[0].Files[0].DownloadCommand)
+	}
+	if got[0].OpenCommand != "slk open '"+permalink+"'" {
+		t.Fatalf("open_command = %q, want runnable permalink command", got[0].OpenCommand)
+	}
+	if got[1].OpenCommand != "" {
+		t.Fatalf("missing permalink produced open_command %q", got[1].OpenCommand)
 	}
 }

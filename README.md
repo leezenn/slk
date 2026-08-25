@@ -38,6 +38,7 @@ slk - Read Slack workspace (channels, DMs, threads, search, files, notes).
       Run `slk --help` and `slk <command> --help` before first use.
       Run `slk whoami` before interpreting authors so you know which user is "me".
       `slk search` for locating specific content (full workspace history).
+      Follow rendered `slk open '<permalink>'` commands to inspect a search hit in context.
       `slk read` for chronological context (recent conversation flow).
       Follow rendered `slk download F...` commands to fetch attachments safely.
 ```
