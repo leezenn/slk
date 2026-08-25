@@ -22,15 +22,17 @@ func NewRootCommand(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{
 		Version:       version,
 		Use:           "slk",
-		Short:         "Read Slack context and reply to message threads",
+		Short:         "Explore Slack context and reply to message threads",
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Long: `Read Slack channels, DMs, threads, and files, and reply to message threads.
+		Long: `Explore Slack activity, channels, DMs, threads, and files, and reply to message threads.
 
 Environment:
   SLACK_TOKEN  Fallback token if keychain is not configured`,
 		Example: `  slk auth xoxp-your-token-here
   slk whoami
+  slk activity
+  slk activity @alex --since 8h
   slk channels --type dm
   slk read general --limit 50
   slk read @john --after 1d
@@ -45,6 +47,7 @@ Tip: quoting short fragments from results helps users verify your interpretation
 	root.PersistentFlags().BoolVarP(&options.verbose, "verbose", "v", false, "Show progress and detailed output")
 
 	root.AddCommand(
+		newActivityCommand(deps, options),
 		newAuthCommand(deps, options),
 		newChannelsCommand(deps, options),
 		newDownloadCommand(deps, options),

@@ -83,6 +83,28 @@ func FormatTimestamp(ts string) string {
 	return t.Local().Format("2006-01-02 15:04")
 }
 
+// FormatRelativeTime describes how long ago a Slack timestamp occurred.
+func FormatRelativeTime(ts string, now time.Time) string {
+	t := TsToTime(ts)
+	if t.IsZero() {
+		return "unknown time"
+	}
+	elapsed := now.Sub(t)
+	if elapsed < time.Minute {
+		return "just now"
+	}
+	if elapsed < time.Hour {
+		return fmt.Sprintf("%dm ago", int(elapsed/time.Minute))
+	}
+	if elapsed < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(elapsed/time.Hour))
+	}
+	if elapsed < 7*24*time.Hour {
+		return fmt.Sprintf("%dd ago", int(elapsed/(24*time.Hour)))
+	}
+	return t.Local().Format("2006-01-02")
+}
+
 // FormatFileSize formats bytes into a human-readable size.
 func FormatFileSize(size int64) string {
 	switch {
@@ -323,6 +345,17 @@ func isDMChannel(name string) bool {
 	return userIDRe.MatchString(name)
 }
 
+// SearchChannelLabel returns a human-readable conversation label for a search hit.
+func SearchChannelLabel(channel api.SearchChannel, resolveUser func(string) string) string {
+	if isDMChannel(channel.Name) {
+		return "@" + resolveUser(channel.Name)
+	}
+	if channel.Name != "" {
+		return "#" + channel.Name
+	}
+	return channel.ID
+}
+
 func channelType(ch api.Channel) string {
 	switch {
 	case ch.IsIM:
@@ -391,12 +424,7 @@ func FormatSearchResults(result *api.SearchResult, resolveUser func(string) stri
 	for _, m := range result.Messages.Matches {
 		ts := FormatTimestamp(m.Ts)
 		text := ResolveText(m.Text, resolveUser)
-		chName := m.Channel.Name
-		if isDMChannel(chName) {
-			chName = "@" + resolveUser(chName)
-		} else {
-			chName = "#" + chName
-		}
+		chName := SearchChannelLabel(m.Channel, resolveUser)
 		fmt.Fprintf(&b, "%s \u2014 %s\n", chName, ts)
 		author := resolveUser(m.User)
 		if author == m.User && m.Username != "" {
@@ -488,6 +516,7 @@ type SearchMatchJSON struct {
 	IsSelf      bool              `json:"is_self"`
 	Text        string            `json:"text"`
 	Ts          string            `json:"ts"`
+	Timestamp   string            `json:"timestamp,omitempty"`
 	Channel     api.SearchChannel `json:"channel"`
 	Permalink   string            `json:"permalink"`
 	OpenCommand string            `json:"open_command,omitempty"`
@@ -502,22 +531,32 @@ func OpenCommand(permalink string) string {
 	return "slk open '" + strings.ReplaceAll(permalink, "'", "'\\''") + "'"
 }
 
-// SearchMatchesToJSON adds authenticated-user identity metadata to search matches.
+// SearchMatchToJSON adds timestamp and authenticated-user identity metadata.
+func SearchMatchToJSON(match api.SearchMatch, selfID string) SearchMatchJSON {
+	timestamp := ""
+	if occurred := TsToTime(match.Ts); !occurred.IsZero() {
+		timestamp = occurred.UTC().Format(time.RFC3339)
+	}
+	return SearchMatchJSON{
+		Type:        match.Type,
+		User:        match.User,
+		Username:    match.Username,
+		IsSelf:      selfID != "" && match.User == selfID,
+		Text:        match.Text,
+		Ts:          match.Ts,
+		Timestamp:   timestamp,
+		Channel:     match.Channel,
+		Permalink:   match.Permalink,
+		OpenCommand: OpenCommand(match.Permalink),
+		Files:       filesToJSON(match.Files),
+	}
+}
+
+// SearchMatchesToJSON converts search matches to their public representation.
 func SearchMatchesToJSON(matches []api.SearchMatch, selfID string) []SearchMatchJSON {
 	out := make([]SearchMatchJSON, 0, len(matches))
 	for _, match := range matches {
-		out = append(out, SearchMatchJSON{
-			Type:        match.Type,
-			User:        match.User,
-			Username:    match.Username,
-			IsSelf:      selfID != "" && match.User == selfID,
-			Text:        match.Text,
-			Ts:          match.Ts,
-			Channel:     match.Channel,
-			Permalink:   match.Permalink,
-			OpenCommand: OpenCommand(match.Permalink),
-			Files:       filesToJSON(match.Files),
-		})
+		out = append(out, SearchMatchToJSON(match, selfID))
 	}
 	return out
 }

@@ -116,8 +116,8 @@ func authAccessSummary(scopes []string) []string {
 		{feature: "private channels", scopes: []string{"groups:history", "groups:read"}},
 		{feature: "direct messages", scopes: []string{"im:history", "im:read"}},
 		{feature: "group messages", scopes: []string{"mpim:history", "mpim:read"}},
-		{feature: "workspace search", scopes: []string{"search:read"}},
-		{feature: "people and identity", scopes: []string{"users:read"}},
+		{feature: "workspace search/activity", scopes: []string{"search:read"}},
+		{feature: "people and activity targeting", scopes: []string{"users:read"}},
 		{feature: "file downloads", scopes: []string{"files:read"}},
 		{feature: "reactions and notes", scopes: []string{"reactions:read"}},
 	}

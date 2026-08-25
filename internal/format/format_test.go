@@ -3,6 +3,7 @@ package format
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leezenn/slk/internal/api"
 )
@@ -20,6 +21,37 @@ func testResolveUser(userID string) string {
 		return "teammate"
 	default:
 		return userID
+	}
+}
+
+func TestFormatRelativeTime(t *testing.T) {
+	now := time.Unix(1_700_086_400, 0)
+	tests := []struct {
+		name string
+		ts   string
+		want string
+	}{
+		{name: "just now", ts: "1700086370.000000", want: "just now"},
+		{name: "minutes", ts: "1700085500.000000", want: "15m ago"},
+		{name: "hours", ts: "1700075600.000000", want: "3h ago"},
+		{name: "days", ts: "1699913600.000000", want: "2d ago"},
+		{name: "invalid", ts: "not-a-timestamp", want: "unknown time"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := FormatRelativeTime(test.ts, now); got != test.want {
+				t.Fatalf("FormatRelativeTime(%q) = %q, want %q", test.ts, got, test.want)
+			}
+		})
+	}
+}
+
+func TestSearchChannelLabel(t *testing.T) {
+	if got := SearchChannelLabel(api.SearchChannel{ID: "C12345678", Name: "general"}, testResolveUser); got != "#general" {
+		t.Fatalf("channel label = %q", got)
+	}
+	if got := SearchChannelLabel(api.SearchChannel{ID: "D12345678", Name: testOtherID}, testResolveUser); got != "@teammate" {
+		t.Fatalf("DM label = %q", got)
 	}
 }
 
@@ -142,6 +174,7 @@ func TestSearchMatchesToJSONSetsIdentityAndDownloadCommand(t *testing.T) {
 		{
 			User:      testSelfID,
 			Text:      "mine",
+			Ts:        "1700000000.000000",
 			Permalink: permalink,
 			Files: []api.File{
 				{ID: "F12345678", Name: "report.pdf"},
@@ -165,6 +198,9 @@ func TestSearchMatchesToJSONSetsIdentityAndDownloadCommand(t *testing.T) {
 	}
 	if got[0].OpenCommand != "slk open '"+permalink+"'" {
 		t.Fatalf("open_command = %q, want runnable permalink command", got[0].OpenCommand)
+	}
+	if got[0].Timestamp != "2023-11-14T22:13:20Z" {
+		t.Fatalf("timestamp = %q, want RFC3339 UTC", got[0].Timestamp)
 	}
 	if got[1].OpenCommand != "" {
 		t.Fatalf("missing permalink produced open_command %q", got[1].OpenCommand)

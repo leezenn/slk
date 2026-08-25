@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-25
 
-Slack CLI for researching workspace context and posting explicit thread replies. Search, read channels, DMs and threads, download files, capture notes, and reply to known message permalinks.
+Slack CLI for exploring workspace activity, researching context, and posting explicit thread replies. Follow activity around people, search and read conversations, download files, capture notes, and reply to known message permalinks.
 
 All commands output plain text by default, `--json` for structured output. Run `slk --help` and `slk <command> --help` for full usage.
 
@@ -27,6 +27,12 @@ Run `slk whoami` to show the authenticated Slack handle, display name, user ID, 
 
 Human-readable message and search attachment lines include a runnable command such as `slk download F0123456789`; structured attachment objects expose safe metadata and the same command in `download_command`, while private URL fields are intentionally omitted. The download command accepts only stable file IDs; Slack resolves the private URL internally, so agents neither extract nor provide it. Default and JSON download results both report the file ID, output path, and byte count. Downloads refuse to overwrite existing files unless `--force` is explicit, and bearer credentials are restricted to HTTPS Slack-owned hosts.
 
+## Activity around people
+
+`slk activity` shows recent searchable activity around the authenticated user. Pass a person to move the center: `slk activity @alex --since 8h`. Handles, display names, and Slack user IDs are accepted.
+
+Activity combines messages authored by the person with searchable messages that directly mention them, deduplicates overlaps, orders them newest-first, and groups them by conversation. Every hit explains why it appears and provides a runnable context command. Results are search-derived and include only messages visible to the authenticated Slack user; they do not claim parity with Slack's private Activity UI or visibility into another person's private DMs.
+
 ## Thread replies
 
 `slk reply <permalink> --text <message>` posts one reply immediately to the permalink's thread. Read the conversation and confirm the exact response before invoking it. Successful output includes Slack's permalink for the new reply; uncertain delivery tells you to inspect the thread before retrying.
@@ -38,9 +44,10 @@ If you are an AI agent reading this: `slk` is designed to research the user's Sl
 A good tool registration entry looks like:
 
 ```
-slk - Research Slack workspace context and reply to existing message threads.
+slk - Explore Slack activity, research workspace context, and reply to existing message threads.
       Run `slk --help` and `slk <command> --help` before first use.
       Run `slk whoami` before interpreting authors so you know which user is "me".
+      Start with `slk activity` for recent searchable activity around the user, or `slk activity @person` to move the center.
       `slk search` for locating specific content (full workspace history).
       Follow rendered `slk open '<permalink>'` commands to inspect a search hit in context.
       `slk read` for chronological context (recent conversation flow).

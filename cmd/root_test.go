@@ -95,7 +95,7 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 }
 
 var commandNames = []string{
-	"auth", "channels", "download", "members", "notes", "open",
+	"activity", "auth", "channels", "download", "members", "notes", "open",
 	"read", "reply", "search", "thread", "users", "whoami",
 }
 
@@ -187,6 +187,9 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		name string
 		args []string
 	}{
+		{name: "activity shape", args: []string{"activity", "one", "two"}},
+		{name: "activity limit", args: []string{"activity", "--limit", "101"}},
+		{name: "activity time", args: []string{"activity", "--since", "not-time"}},
 		{name: "auth shape", args: []string{"auth", "one", "two"}},
 		{name: "interactive auth token", args: []string{"auth", "--interactive", "xoxp-placeholder"}},
 		{name: "interactive auth clear", args: []string{"auth", "--interactive", "--clear"}},
@@ -240,7 +243,7 @@ func TestAuthRequiredExplainsRecovery(t *testing.T) {
 
 func TestCanceledContextStopsEveryCommandBeforeDependencies(t *testing.T) {
 	tests := [][]string{
-		{"auth"}, {"channels"}, {"download", "F0123456789"}, {"members", "general"},
+		{"activity"}, {"auth"}, {"channels"}, {"download", "F0123456789"}, {"members", "general"},
 		{"notes"}, {"open", "https://workspace.slack.com/archives/C12345678/p1705312325000100"},
 		{"read", "general"},
 		{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--text", "hello"},
