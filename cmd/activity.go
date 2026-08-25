@@ -63,7 +63,8 @@ func newActivityCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Comm
 With no person, activity is centered on the authenticated user. A person may be
 specified by @handle, handle, display name, or Slack user ID. Results combine
 messages authored by the person with searchable messages that mention them,
-grouped by conversation and visible only through the authenticated user's access.`,
+grouped by conversation and visible only through the authenticated user's access.
+When both signals exist and the limit permits, at least one of each is retained.`,
 		Example: `  slk activity
   slk activity @alex
   slk activity @alex --since 8h --limit 30
@@ -199,10 +200,49 @@ func collectActivity(client activitySearcher, userID string, cutoff time.Time, l
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].Match.Ts > items[j].Match.Ts
 	})
-	if len(items) > limit {
-		items = items[:limit]
+	return selectActivityItems(items, limit), nil
+}
+
+func selectActivityItems(items []activityItem, limit int) []activityItem {
+	if len(items) <= limit {
+		return items
 	}
-	return items, nil
+	if limit < 2 {
+		return items[:limit]
+	}
+
+	selected := make(map[int]bool, limit)
+	for _, reason := range []activityReason{activityMentioned, activityAuthored} {
+		for index, item := range items {
+			if activityHasReason(item.Reasons, reason) {
+				selected[index] = true
+				break
+			}
+		}
+	}
+	for index := range items {
+		if len(selected) == limit {
+			break
+		}
+		selected[index] = true
+	}
+
+	out := make([]activityItem, 0, limit)
+	for index, item := range items {
+		if selected[index] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func activityHasReason(reasons []activityReason, wanted activityReason) bool {
+	for _, reason := range reasons {
+		if reason == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func appendActivityReason(reasons []activityReason, reason activityReason) []activityReason {

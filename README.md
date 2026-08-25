@@ -37,7 +37,7 @@ This is a bounded pulse of searchable activity, not an unread counter or a guara
 
 `slk activity` shows recent searchable activity around the authenticated user. Pass a person to move the center: `slk activity @alex --since 8h`. Handles, display names, and Slack user IDs are accepted.
 
-Activity combines messages authored by the person with searchable messages that directly mention them, deduplicates overlaps, orders them newest-first, and groups them by conversation. Every hit explains why it appears and provides a runnable context command. Results are search-derived and include only messages visible to the authenticated Slack user; they do not claim parity with Slack's private Activity UI or visibility into another person's private DMs.
+Activity combines messages authored by the person with searchable messages that directly mention them, deduplicates overlaps, orders them newest-first, and groups them by conversation. When both signal types exist and the limit permits, the bounded view retains at least one of each. Every hit explains why it appears and provides a runnable context command. Results are search-derived and include only messages visible to the authenticated Slack user; they do not claim parity with Slack's private Activity UI or visibility into another person's private DMs.
 
 ## Thread replies
 

@@ -113,6 +113,32 @@ func TestCollectActivityBuildsPersonCenteredField(t *testing.T) {
 	}
 }
 
+func TestCollectActivityPreservesSignalDiversityAtTheLimit(t *testing.T) {
+	const targetID = "U12345678"
+	mention := "<@" + targetID + ">"
+	client := &fakeActivitySearcher{results: map[string]*api.SearchResult{
+		"from:" + mention: activityResult(
+			api.SearchMatch{User: targetID, Text: "authored one", Ts: "1700000500.000001", Channel: api.SearchChannel{ID: "C1"}},
+			api.SearchMatch{User: targetID, Text: "authored two", Ts: "1700000400.000001", Channel: api.SearchChannel{ID: "C1"}},
+			api.SearchMatch{User: targetID, Text: "authored three", Ts: "1700000300.000001", Channel: api.SearchChannel{ID: "C1"}},
+		),
+		mention: activityResult(
+			api.SearchMatch{User: "U87654321", Text: "please ask " + mention, Ts: "1700000200.000001", Channel: api.SearchChannel{ID: "C2"}},
+		),
+	}}
+
+	items, err := collectActivity(client, targetID, time.Unix(1_700_000_000, 0), 3)
+	if err != nil {
+		t.Fatalf("collectActivity returned error: %v", err)
+	}
+	if len(items) != 3 || !activityHasReason(items[2].Reasons, activityMentioned) {
+		t.Fatalf("limited items buried the mention: %#v", items)
+	}
+	if items[0].Match.Ts != "1700000500.000001" || items[1].Match.Ts != "1700000400.000001" {
+		t.Fatalf("remaining slots did not preserve exact recency: %#v", items)
+	}
+}
+
 func TestCollectActivityStopsWhenEitherSearchFails(t *testing.T) {
 	const targetID = "U12345678"
 	mention := "<@" + targetID + ">"
