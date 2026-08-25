@@ -11,17 +11,16 @@ import (
 	"strings"
 
 	"github.com/leezenn/slk/internal/api"
-	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/format"
 	"github.com/spf13/cobra"
 )
 
-var (
-	downloadOutput string
-	downloadForce  bool
-)
-
 var slackFileIDRe = regexp.MustCompile(`^F[A-Z0-9]{8,}$`)
+
+type downloadOptions struct {
+	output string
+	force  bool
+}
 
 type downloadSource struct {
 	URL      string
@@ -43,93 +42,93 @@ type fileInfoGetter interface {
 	GetFileInfo(fileID string) (*api.File, error)
 }
 
-var downloadCmd = &cobra.Command{
-	Use:   "download <file-id>",
-	Short: "Download a file attachment",
-	Long: `Download a Slack attachment using the stable file ID shown in message output.
+func newDownloadCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
+	options := &downloadOptions{}
+	command := &cobra.Command{
+		Use:   "download <file-id>",
+		Short: "Download a file attachment",
+		Long: `Download a Slack attachment using the stable file ID shown in message output.
 
 The file ID is resolved through Slack's files.info API. Private download URLs
 remain internal to the transfer. Existing output files are never overwritten
 unless --force is set.`,
-	Example: `  slk download F0123456789
+		Example: `  slk download F0123456789
   slk download F0123456789 -o report.pdf
   slk download F0123456789 -o report.pdf --force
   slk download F0123456789 --json`,
-	Args: validateDownloadArgs,
-	Run: func(cmd *cobra.Command, args []string) {
-		fileID := args[0]
-
-		result, err := auth.GetToken()
+		Args: validateDownloadArgs,
+	}
+	command.Flags().StringVarP(&options.output, "output", "o", "", "Output file path")
+	command.Flags().BoolVar(&options.force, "force", false, "Overwrite the output file if it already exists")
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		client, err := getClient(cmd, deps)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return err
 		}
-
-		client := api.NewClient(result.Token)
+		fileID := args[0]
 		source, err := resolveDownloadSource(client, fileID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
 
-		// Determine output filename
-		outputPath := downloadOutput
+		outputPath := options.output
 		if outputPath == "" {
 			outputPath = source.Filename
 			if outputPath == "" {
 				outputPath = "download"
 			}
 		}
-
-		if err := ensureDownloadDestinationAvailable(outputPath, downloadForce); err != nil {
+		if err := ensureDownloadDestinationAvailable(outputPath, options.force); err != nil {
 			if errors.Is(err, os.ErrExist) {
-				fmt.Fprintf(os.Stderr, "Error: refusing to overwrite %s; choose another path or pass --force\n", outputPath)
-			} else {
-				fmt.Fprintf(os.Stderr, "Error checking output path: %v\n", err)
+				return refusedDownloadPath(outputPath)
 			}
-			os.Exit(1)
+			return filesystemError(err)
+		}
+		if err := checkContext(cmd.Context()); err != nil {
+			return err
 		}
 
 		body, contentLength, err := client.DownloadFile(source.URL)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
 		defer body.Close()
 
-		// Show progress for files > 1MB when verbose
 		var reader io.Reader = body
-		if contentLength > 1<<20 && verboseOutput {
-			reader = &progressReader{reader: body, total: contentLength}
+		if contentLength > 1<<20 && rootOptions.verbose {
+			reader = &progressReader{reader: body, total: contentLength, out: cmd.ErrOrStderr()}
 		}
-
-		written, err := writeDownloadFile(outputPath, downloadForce, reader)
+		written, err := writeDownloadFile(outputPath, options.force, reader)
 		if err != nil {
 			if errors.Is(err, os.ErrExist) {
-				fmt.Fprintf(os.Stderr, "\nError: refusing to overwrite %s; choose another path or pass --force\n", outputPath)
-			} else {
-				fmt.Fprintf(os.Stderr, "\nError writing file: %v\n", err)
+				return refusedDownloadPath(outputPath)
 			}
-			os.Exit(1)
+			return filesystemError(err)
 		}
-		if contentLength > 1<<20 && verboseOutput {
-			fmt.Fprintf(os.Stderr, "\n")
+		if contentLength > 1<<20 && rootOptions.verbose {
+			fmt.Fprintln(cmd.ErrOrStderr())
 		}
-		output, err := formatDownloadResult(downloadResult{
-			FileID: fileID,
-			Path:   outputPath,
-			Bytes:  written,
-		}, jsonOutput)
+		output, err := formatDownloadResult(downloadResult{FileID: fileID, Path: outputPath, Bytes: written}, rootOptions.json)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error formatting output: %v\n", err)
-			os.Exit(1)
+			return internalError()
 		}
-		fmt.Println(output)
-	},
+		fmt.Fprintln(cmd.OutOrStdout(), output)
+		return nil
+	}
+	return command
+}
+
+func refusedDownloadPath(path string) error {
+	absolute, err := filepath.Abs(path)
+	if err == nil {
+		path = filepath.Clean(absolute)
+	}
+	return refusedError("output already exists: "+safeDynamic(path, 4096), "Choose another path or pass --force.")
 }
 
 type progressReader struct {
 	reader  io.Reader
+	out     io.Writer
 	total   int64
 	current int64
 	lastPct int
@@ -142,7 +141,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 		pct := int(float64(pr.current) / float64(pr.total) * 100)
 		if pct != pr.lastPct {
 			pr.lastPct = pct
-			fmt.Fprintf(os.Stderr, "\rDownloading... %d%%", pct)
+			fmt.Fprintf(pr.out, "\rDownloading... %d%%", pct)
 		}
 	}
 	return n, err
@@ -157,9 +156,12 @@ func formatDownloadResult(result downloadResult, asJSON bool) (string, error) {
 
 func validateDownloadArgs(cmd *cobra.Command, args []string) error {
 	if err := cobra.ExactArgs(1)(cmd, args); err != nil {
-		return err
+		return invalidArgument(cmd, err.Error())
 	}
-	return validateSlackFileID(args[0])
+	if err := validateSlackFileID(args[0]); err != nil {
+		return invalidArgument(cmd, err.Error())
+	}
+	return nil
 }
 
 func validateSlackFileID(fileID string) error {
@@ -173,7 +175,6 @@ func resolveDownloadSource(client fileInfoGetter, fileID string) (downloadSource
 	if err := validateSlackFileID(fileID); err != nil {
 		return downloadSource{}, err
 	}
-
 	file, err := client.GetFileInfo(fileID)
 	if err != nil {
 		return downloadSource{}, fmt.Errorf("resolving Slack file %s: %w", fileID, err)
@@ -269,19 +270,9 @@ func filenameFromURL(rawURL string) string {
 	if err != nil {
 		return ""
 	}
-	path := u.Path
-	parts := strings.Split(path, "/")
-	if len(parts) > 0 {
-		name := parts[len(parts)-1]
-		if name != "" {
-			return filepath.Base(name)
-		}
+	parts := strings.Split(u.Path, "/")
+	if len(parts) > 0 && parts[len(parts)-1] != "" {
+		return filepath.Base(parts[len(parts)-1])
 	}
 	return ""
-}
-
-func init() {
-	downloadCmd.Flags().StringVarP(&downloadOutput, "output", "o", "", "Output file path")
-	downloadCmd.Flags().BoolVar(&downloadForce, "force", false, "Overwrite the output file if it already exists")
-	rootCmd.AddCommand(downloadCmd)
 }

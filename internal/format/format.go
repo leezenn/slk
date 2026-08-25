@@ -3,7 +3,6 @@ package format
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -70,7 +69,6 @@ func TsToTime(ts string) time.Time {
 	parts := strings.Split(ts, ".")
 	sec, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: malformed timestamp: %s\n", ts)
 		return time.Time{}
 	}
 	return time.Unix(sec, 0)

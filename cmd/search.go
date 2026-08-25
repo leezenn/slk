@@ -2,81 +2,66 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 
-	"github.com/leezenn/slk/internal/api"
-	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/format"
 	"github.com/spf13/cobra"
 )
 
 var fromAtRe = regexp.MustCompile(`from:@(\S+)`)
 
-var searchLimit int
+type searchOptions struct {
+	limit int
+}
 
-var searchCmd = &cobra.Command{
-	Use:   "search <query>",
-	Short: "Search messages across workspace",
-	Long: `Search for messages across all channels in the workspace.
+func newSearchCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
+	options := &searchOptions{limit: 10}
+	command := &cobra.Command{
+		Use:   "search <query>",
+		Short: "Search messages across workspace",
+		Long: `Search for messages across all channels in the workspace.
 
 Note: This command requires a user token (xoxp-), not a bot token.
 Slack's search.messages API is only available with user tokens.`,
-	Example: `  slk search "deploy failed"
+		Example: `  slk search "deploy failed"
   slk search "from:@john database" --limit 20
   slk search "in:#general bug report"`,
-	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		query := args[0]
-
-		result, err := auth.GetToken()
+		Args: argumentValidator(cobra.ExactArgs(1)),
+	}
+	command.Flags().IntVar(&options.limit, "limit", 10, "Maximum number of search results")
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		client, err := getClient(cmd, deps)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return err
 		}
-
-		client := api.NewClient(result.Token)
 		selfID, err := identifySelf(client)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
 		if err := client.BuildUserCache(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: user cache unavailable, from:@ resolution disabled: %v\n", err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: user cache unavailable, from:@ resolution disabled: %v\n", err)
 		}
-
-		// Resolve from:@DisplayName to from:@username for Slack search API
-		query = fromAtRe.ReplaceAllStringFunc(query, func(match string) string {
+		query := fromAtRe.ReplaceAllStringFunc(args[0], func(match string) string {
 			name := fromAtRe.FindStringSubmatch(match)[1]
-			resolved := client.ResolveDisplayNameToUsername(name)
-			return "from:@" + resolved
+			return "from:@" + client.ResolveDisplayNameToUsername(name)
 		})
-
-		searchResult, err := client.SearchMessages(query, searchLimit)
+		result, err := client.SearchMessages(query, options.limit)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
-
-		if jsonOutput {
+		if rootOptions.json {
 			out, err := format.FormatJSON(map[string]interface{}{
-				"ok":      true,
-				"total":   searchResult.Messages.Total,
-				"matches": format.SearchMatchesToJSON(searchResult.Messages.Matches, selfID),
+				"ok": true, "total": result.Messages.Total,
+				"matches": format.SearchMatchesToJSON(result.Messages.Matches, selfID),
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return internalError()
 			}
-			fmt.Println(out)
-			return
+			fmt.Fprintln(cmd.OutOrStdout(), out)
+			return nil
 		}
-
-		fmt.Print(format.FormatSearchResults(searchResult, client.ResolveUser, selfID))
-	},
-}
-
-func init() {
-	searchCmd.Flags().IntVar(&searchLimit, "limit", 10, "Maximum number of search results")
-	rootCmd.AddCommand(searchCmd)
+		fmt.Fprint(cmd.OutOrStdout(), format.FormatSearchResults(result, client.ResolveUser, selfID))
+		return nil
+	}
+	return command
 }

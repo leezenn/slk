@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -10,279 +9,205 @@ import (
 	"time"
 
 	"github.com/leezenn/slk/internal/api"
-	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/format"
 	"github.com/spf13/cobra"
 )
 
-var (
-	readLimit  int
-	readAfter  string
-	readBefore string
-	readAround string
-)
+type readOptions struct {
+	limit  int
+	after  string
+	before string
+	around string
+}
 
 var relativeTimeRe = regexp.MustCompile(`^(\d+)([smhd])$`)
 
-var readCmd = &cobra.Command{
-	Use:   "read <channel-or-user>",
-	Short: "Read messages from a channel or DM",
-	Long: `Read messages from a Slack channel or DM conversation.
+func newReadCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
+	options := &readOptions{limit: 25}
+	command := &cobra.Command{
+		Use:   "read <channel-or-user>",
+		Short: "Read messages from a channel or DM",
+		Long: `Read messages from a Slack channel or DM conversation.
 
 Target can be a channel name (e.g., general), channel ID (e.g., C12345),
 or a username prefixed with @ (e.g., @john) for DMs.
 
 Time filters accept absolute dates (2024-01-15, 2024-01-15T14:00) or
 relative durations (1h, 2d, 30m, 60s).`,
-	Example: `  slk read general                    # Recent messages from #general
+		Example: `  slk read general                    # Recent messages from #general
   slk read general --limit 50         # Last 50 messages
   slk read @john                      # DMs with john
   slk read general --after 1d         # Messages from last 24 hours
   slk read general --after 2024-01-15 # Messages since Jan 15
   slk read general --around 1705312325.000100 --limit 10  # Messages around a timestamp`,
-	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		target := args[0]
-
-		result, err := auth.GetToken()
+		Args: argumentValidator(cobra.ExactArgs(1)),
+	}
+	command.Flags().IntVar(&options.limit, "limit", 25, "Maximum number of messages to retrieve")
+	command.Flags().StringVar(&options.after, "after", "", "Show messages after this time (2024-01-15, 1h, 2d)")
+	command.Flags().StringVar(&options.before, "before", "", "Show messages before this time")
+	command.Flags().StringVar(&options.around, "around", "", "Show messages around this Slack timestamp")
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		if options.around != "" && (options.after != "" || options.before != "") {
+			return conflictingOptions(cmd, "--around is mutually exclusive with --after and --before")
+		}
+		if err := checkContext(cmd.Context()); err != nil {
+			return err
+		}
+		now, err := deps.now()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return err
+		}
+		oldest, err := parseTimeArgAt(options.after, now)
+		if err != nil {
+			return invalidArgument(cmd, "--after: "+err.Error())
+		}
+		latest, err := parseTimeArgAt(options.before, now)
+		if err != nil {
+			return invalidArgument(cmd, "--before: "+err.Error())
 		}
 
-		client := api.NewClient(result.Token)
+		client, err := getClient(cmd, deps)
+		if err != nil {
+			return err
+		}
 		selfID, err := identifySelf(client)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
-
-		// Build user cache for mention resolution
 		if err := client.BuildUserCache(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: user cache unavailable: %v\n", err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: user cache unavailable: %v\n", err)
 		}
-
-		// Resolve target to channel ID
-		channelID, channelName, err := resolveTarget(client, target)
+		channelID, channelName, err := resolveTarget(client, args[0])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
 
-		var msgs []api.Message
-
-		if readAround != "" {
-			if readAfter != "" || readBefore != "" {
-				fmt.Fprintln(os.Stderr, "Error: --around is mutually exclusive with --after and --before")
-				os.Exit(1)
-			}
-
-			halfBefore := readLimit / 2
-			halfAfter := readLimit - halfBefore // gets the extra 1 when limit is odd
-
-			// Fetch messages before (and excluding) the target ts
-			before, err := client.GetHistory(channelID, halfBefore, "", readAround)
+		var messages []api.Message
+		if options.around != "" {
+			halfBefore := options.limit / 2
+			halfAfter := options.limit - halfBefore
+			before, err := client.GetHistory(channelID, halfBefore, "", options.around)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error fetching messages before: %v\n", err)
-				os.Exit(1)
+				return slackAPIError(err)
 			}
-
-			// Fetch messages from the target ts onward (inclusive)
-			after, err := client.GetHistoryAfter(channelID, halfAfter+1, readAround)
+			after, err := client.GetHistoryAfter(channelID, halfAfter+1, options.around)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error fetching messages after: %v\n", err)
-				os.Exit(1)
+				return slackAPIError(err)
 			}
-
-			// Deduplicate by ts and merge
 			seen := make(map[string]bool, len(before)+len(after))
-			for _, m := range before {
-				if !seen[m.Ts] {
-					seen[m.Ts] = true
-					msgs = append(msgs, m)
+			for _, message := range append(before, after...) {
+				if !seen[message.Ts] {
+					seen[message.Ts] = true
+					messages = append(messages, message)
 				}
 			}
-			for _, m := range after {
-				if !seen[m.Ts] {
-					seen[m.Ts] = true
-					msgs = append(msgs, m)
-				}
-			}
-
-			// Both API calls return newest-first; sort all by ts descending
-			// so the subsequent reverseMessages gives chronological order
-			sort.Slice(msgs, func(i, j int) bool {
-				return msgs[i].Ts > msgs[j].Ts
-			})
-
-			// Cap to limit
-			if len(msgs) > readLimit {
-				msgs = msgs[:readLimit]
+			sort.Slice(messages, func(i, j int) bool { return messages[i].Ts > messages[j].Ts })
+			if len(messages) > options.limit {
+				messages = messages[:options.limit]
 			}
 		} else {
-			// Parse time filters
-			oldest, err := parseTimeArg(readAfter)
+			messages, err = client.GetHistory(channelID, options.limit, oldest, latest)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error parsing --after: %v\n", err)
-				os.Exit(1)
-			}
-			latest, err := parseTimeArg(readBefore)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error parsing --before: %v\n", err)
-				os.Exit(1)
-			}
-
-			msgs, err = client.GetHistory(channelID, readLimit, oldest, latest)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return slackAPIError(err)
 			}
 		}
+		reverseMessages(messages)
 
-		// Reverse to chronological order (API returns newest first)
-		reverseMessages(msgs)
-
-		if jsonOutput {
-			jsonMsgs := format.MessagesToJSON(msgs, client.ResolveUser, selfID)
+		if rootOptions.json {
 			out, err := format.FormatJSON(map[string]interface{}{
-				"ok":       true,
-				"channel":  channelName,
-				"messages": jsonMsgs,
+				"ok": true, "channel": channelName,
+				"messages": format.MessagesToJSON(messages, client.ResolveUser, selfID),
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return internalError()
 			}
-			fmt.Println(out)
-			return
+			fmt.Fprintln(cmd.OutOrStdout(), out)
+			return nil
 		}
-
-		fmt.Print(format.FormatMessages(msgs, channelName, client.ResolveUser, selfID))
-	},
+		fmt.Fprint(cmd.OutOrStdout(), format.FormatMessages(messages, channelName, client.ResolveUser, selfID))
+		return nil
+	}
+	return command
 }
 
-func resolveTarget(client *api.Client, target string) (channelID, channelName string, err error) {
-	// Username/display name -> DM
+type targetResolver interface {
+	FindDMByUser(username string) (*api.Channel, error)
+	FindDMByUserID(userID string) (*api.Channel, error)
+	FindChannelByName(name string) (*api.Channel, error)
+	ResolveUser(userID string) string
+}
+
+func resolveTarget(client targetResolver, target string) (channelID, channelName string, err error) {
 	if strings.HasPrefix(target, "@") {
-		username := target[1:]
-		ch, err := client.FindDMByUser(username)
+		channel, err := client.FindDMByUser(target[1:])
 		if err != nil {
 			return "", "", err
 		}
-		displayName := client.ResolveUser(ch.User)
-		return ch.ID, "@" + displayName, nil
+		return channel.ID, "@" + client.ResolveUser(channel.User), nil
 	}
-
-	// User ID (U-prefixed, uppercase alphanumeric) -> DM
 	if matched, _ := regexp.MatchString(`^U[A-Z0-9]{8,}$`, target); matched {
-		ch, err := client.FindDMByUserID(target)
+		channel, err := client.FindDMByUserID(target)
 		if err != nil {
 			return "", "", err
 		}
-		displayName := client.ResolveUser(target)
-		return ch.ID, "@" + displayName, nil
+		return channel.ID, "@" + client.ResolveUser(target), nil
 	}
-
-	// Channel ID
-	if strings.HasPrefix(target, "C") || strings.HasPrefix(target, "G") || strings.HasPrefix(target, "D") {
-		if len(target) >= 9 {
-			return target, target, nil
-		}
+	if len(target) >= 9 && (strings.HasPrefix(target, "C") || strings.HasPrefix(target, "G") || strings.HasPrefix(target, "D")) {
+		return target, target, nil
 	}
-
-	// Channel name lookup
-	ch, err := client.FindChannelByName(target)
+	channel, err := client.FindChannelByName(target)
 	if err != nil {
 		return "", "", err
 	}
-	return ch.ID, ch.Name, nil
+	return channel.ID, channel.Name, nil
 }
 
 func parseTimeArg(val string) (string, error) {
+	return parseTimeArgAt(val, time.Now())
+}
+
+func parseTimeArgAt(val string, now time.Time) (string, error) {
 	if val == "" {
 		return "", nil
 	}
-
-	// Relative time: 1h, 2d, 30m, 60s
-	if m := relativeTimeRe.FindStringSubmatch(val); len(m) == 3 {
-		num, _ := strconv.Atoi(m[1])
-		var dur time.Duration
-		switch m[2] {
+	if match := relativeTimeRe.FindStringSubmatch(val); len(match) == 3 {
+		num, _ := strconv.Atoi(match[1])
+		var duration time.Duration
+		switch match[2] {
 		case "s":
-			dur = time.Duration(num) * time.Second
+			duration = time.Duration(num) * time.Second
 		case "m":
-			dur = time.Duration(num) * time.Minute
+			duration = time.Duration(num) * time.Minute
 		case "h":
-			dur = time.Duration(num) * time.Hour
+			duration = time.Duration(num) * time.Hour
 		case "d":
-			dur = time.Duration(num) * 24 * time.Hour
+			duration = time.Duration(num) * 24 * time.Hour
 		}
-		ts := time.Now().Add(-dur)
-		return fmt.Sprintf("%d", ts.Unix()), nil
+		return fmt.Sprintf("%d", now.Add(-duration).Unix()), nil
 	}
-
-	// Unix timestamp (raw seconds)
 	if _, err := strconv.ParseFloat(val, 64); err == nil && len(val) >= 9 {
-		// Looks like a unix timestamp (9+ digits). ParseFloat handles both int and float.
-		ts, _ := strconv.ParseInt(val, 10, 64)
-		return fmt.Sprintf("%d", ts), nil
+		timestamp, _ := strconv.ParseInt(val, 10, 64)
+		return fmt.Sprintf("%d", timestamp), nil
 	}
-
-	// ISO 8601 with timezone: 2024-01-15T14:00:00Z or 2024-01-15T14:00:00+00:00
-	if t, err := time.Parse(time.RFC3339, val); err == nil {
-		return fmt.Sprintf("%d", t.Unix()), nil
+	for _, layout := range []string{
+		time.RFC3339, "2006-01-02T15:04Z", "2006-01-02T15:04:05",
+		"2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02",
+	} {
+		if parsed, err := time.Parse(layout, val); err == nil {
+			return fmt.Sprintf("%d", parsed.Unix()), nil
+		}
 	}
-	// Z suffix without seconds: 2024-01-15T14:00Z
-	if t, err := time.Parse("2006-01-02T15:04Z", val); err == nil {
-		return fmt.Sprintf("%d", t.Unix()), nil
+	for _, layout := range []string{"15:04:05", "15:04"} {
+		if parsed, err := time.Parse(layout, val); err == nil {
+			timestamp := time.Date(now.Year(), now.Month(), now.Day(), parsed.Hour(), parsed.Minute(), parsed.Second(), 0, time.Local)
+			return fmt.Sprintf("%d", timestamp.Unix()), nil
+		}
 	}
-
-	// Absolute: 2024-01-15T14:00:00 or 2024-01-15T14:00
-	if t, err := time.Parse("2006-01-02T15:04:05", val); err == nil {
-		return fmt.Sprintf("%d", t.Unix()), nil
-	}
-	if t, err := time.Parse("2006-01-02T15:04", val); err == nil {
-		return fmt.Sprintf("%d", t.Unix()), nil
-	}
-
-	// Absolute: 2024-01-15 14:00:00 or 2024-01-15 14:00 (space separator)
-	if t, err := time.Parse("2006-01-02 15:04:05", val); err == nil {
-		return fmt.Sprintf("%d", t.Unix()), nil
-	}
-	if t, err := time.Parse("2006-01-02 15:04", val); err == nil {
-		return fmt.Sprintf("%d", t.Unix()), nil
-	}
-
-	// Absolute: 2024-01-15
-	if t, err := time.Parse("2006-01-02", val); err == nil {
-		return fmt.Sprintf("%d", t.Unix()), nil
-	}
-
-	// Time only (today): 14:00 or 14:00:00
-	if t, err := time.Parse("15:04:05", val); err == nil {
-		now := time.Now()
-		ts := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.Local)
-		return fmt.Sprintf("%d", ts.Unix()), nil
-	}
-	if t, err := time.Parse("15:04", val); err == nil {
-		now := time.Now()
-		ts := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, time.Local)
-		return fmt.Sprintf("%d", ts.Unix()), nil
-	}
-
-	return "", fmt.Errorf("unrecognized time format: %s (use 2024-01-15, 2024-01-15T14:00, \"2024-01-15 14:00\", 14:00, 1h, 2d, or unix timestamp)", val)
+	return "", fmt.Errorf("unrecognized time format (use 2024-01-15, 2024-01-15T14:00, 14:00, 1h, 2d, or unix timestamp)")
 }
 
-func reverseMessages(msgs []api.Message) {
-	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
-		msgs[i], msgs[j] = msgs[j], msgs[i]
+func reverseMessages(messages []api.Message) {
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
 	}
-}
-
-func init() {
-	readCmd.Flags().IntVar(&readLimit, "limit", 25, "Maximum number of messages to retrieve")
-	readCmd.Flags().StringVar(&readAfter, "after", "", "Show messages after this time (2024-01-15, 1h, 2d)")
-	readCmd.Flags().StringVar(&readBefore, "before", "", "Show messages before this time")
-	readCmd.Flags().StringVar(&readAround, "around", "", "Show messages around this Slack timestamp")
-	rootCmd.AddCommand(readCmd)
 }

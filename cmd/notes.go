@@ -3,24 +3,24 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/leezenn/slk/internal/api"
-	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/format"
 	"github.com/spf13/cobra"
 )
 
-var (
-	notesSince  string
-	notesEmoji  string
-	notesDryRun bool
-	notesDir    string
-	notesFormat string
-)
+type notesOptions struct {
+	since  string
+	emoji  string
+	dryRun bool
+	dir    string
+	format string
+}
 
 // notesState tracks which messages have already been captured.
 type notesState struct {
@@ -43,10 +43,12 @@ type noteOutput struct {
 	File      string `json:"file"`
 }
 
-var notesCmd = &cobra.Command{
-	Use:   "notes",
-	Short: "Capture Slack messages you reacted to as markdown notes",
-	Long: `Find Slack messages the authenticated user reacted to with a specific emoji
+func newNotesCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
+	options := &notesOptions{since: "7d", emoji: "writing_hand"}
+	command := &cobra.Command{
+		Use:   "notes",
+		Short: "Capture Slack messages you reacted to as markdown notes",
+		Long: `Find Slack messages the authenticated user reacted to with a specific emoji
 and save them locally.
 
 Output: <dir>/notes.jsonl (default) or <dir>/*.md
@@ -54,20 +56,35 @@ State:  <dir>/.slk-state.json
 
 Directory: --dir > SLK_NOTES_DIR > ~/Documents/notes/slack/
 Format:  --format > SLK_NOTES_FORMAT > jsonl`,
-	Example: `  slk notes                          # Capture new writing_hand notes
+		Example: `  slk notes                          # Capture new writing_hand notes
   slk notes --dry-run                 # Preview without saving
   slk notes --emoji eyes --since 30d  # Different emoji, longer window
   slk notes --format md                # Save as individual .md files
   slk notes --dir ~/work/notes        # Custom directory`,
-	Run: runNotes,
+		Args: argumentValidator(cobra.NoArgs),
+	}
+	command.Flags().StringVar(&options.since, "since", "7d", "How far back to look (1h, 2d, 7d, 30d)")
+	command.Flags().StringVar(&options.emoji, "emoji", "writing_hand", "Reaction emoji to capture")
+	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "Preview without saving")
+	command.Flags().StringVar(&options.dir, "dir", "", "Notes directory (default ~/Documents/notes/slack/)")
+	command.Flags().StringVar(&options.format, "format", "", "Output format: jsonl or md (default jsonl, or SLK_NOTES_FORMAT)")
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		return runNotes(cmd, deps, options, rootOptions)
+	}
+	return command
 }
 
-func runNotes(cmd *cobra.Command, args []string) {
-	// Parse --since into a cutoff time
-	sinceEpoch, err := parseTimeArg(notesSince)
+func runNotes(cmd *cobra.Command, deps Dependencies, options *notesOptions, rootOptions *rootOptions) error {
+	if err := checkContext(cmd.Context()); err != nil {
+		return err
+	}
+	now, err := deps.now()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing --since: %v\n", err)
-		os.Exit(1)
+		return err
+	}
+	sinceEpoch, err := parseTimeArgAt(options.since, now)
+	if err != nil {
+		return invalidArgument(cmd, "--since: "+err.Error())
 	}
 	var cutoff time.Time
 	if sinceEpoch != "" {
@@ -76,27 +93,21 @@ func runNotes(cmd *cobra.Command, args []string) {
 		cutoff = time.Unix(sec, 0)
 	}
 
-	// Auth
-	result, err := auth.GetToken()
+	client, err := getClient(cmd, deps)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
-
-	client := api.NewClient(result.Token)
 	if err := client.Identify(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error identifying user: %v\n", err)
-		os.Exit(1)
+		return slackAPIError(err)
 	}
 	if err := client.BuildUserCache(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: user cache unavailable: %v\n", err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: user cache unavailable: %v\n", err)
 	}
 
 	// Build channel cache: ID -> name
 	channels, err := client.ListChannels("public_channel,private_channel,mpim,im", 0)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error listing channels: %v\n", err)
-		os.Exit(1)
+		return slackAPIError(err)
 	}
 	channelMap := make(map[string]string, len(channels))
 	for _, ch := range channels {
@@ -110,8 +121,7 @@ func runNotes(cmd *cobra.Command, args []string) {
 	// Fetch all reacted items
 	items, err := client.ReactionsList(0)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error fetching reactions: %v\n", err)
-		os.Exit(1)
+		return slackAPIError(err)
 	}
 
 	// Filter items
@@ -128,7 +138,7 @@ func runNotes(cmd *cobra.Command, args []string) {
 		}
 
 		// Emoji filter: check if message has a matching reaction
-		if !hasMatchingReaction(item.Message.Reactions, notesEmoji, client.SelfID()) {
+		if !hasMatchingReaction(item.Message.Reactions, options.emoji, client.SelfID()) {
 			continue
 		}
 
@@ -136,21 +146,20 @@ func runNotes(cmd *cobra.Command, args []string) {
 	}
 
 	// Resolve notes directory: --dir flag > SLK_NOTES_DIR env > ~/.notes
-	resolvedDir := notesDir
+	resolvedDir := options.dir
 	if resolvedDir == "" {
 		resolvedDir = os.Getenv("SLK_NOTES_DIR")
 	}
 	if resolvedDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot determine home directory: %v\n", err)
-			os.Exit(1)
+			return filesystemError(err)
 		}
 		resolvedDir = filepath.Join(home, "Documents", "notes", "slack")
 	}
 
 	// Resolve format: --format flag > SLK_NOTES_FORMAT env > md
-	resolvedFormat := notesFormat
+	resolvedFormat := options.format
 	if resolvedFormat == "" {
 		resolvedFormat = os.Getenv("SLK_NOTES_FORMAT")
 	}
@@ -158,13 +167,12 @@ func runNotes(cmd *cobra.Command, args []string) {
 		resolvedFormat = "jsonl"
 	}
 	if resolvedFormat != "md" && resolvedFormat != "jsonl" {
-		fmt.Fprintf(os.Stderr, "Error: --format must be 'md' or 'jsonl', got '%s'\n", resolvedFormat)
-		os.Exit(1)
+		return invalidArgument(cmd, "--format must be 'md' or 'jsonl'")
 	}
 
 	// Load state
 	statePath := filepath.Join(resolvedDir, ".slk-state.json")
-	state := loadState(statePath)
+	state := loadState(statePath, cmd.ErrOrStderr())
 
 	// Filter already captured
 	var newItems []api.ReactionsListItem
@@ -191,7 +199,7 @@ func runNotes(cmd *cobra.Command, args []string) {
 				ctx.parent = &replies[0]
 				hasContext = true
 			} else if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not fetch thread context: %v\n", err)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not fetch thread context: %v\n", err)
 			}
 		}
 
@@ -213,7 +221,7 @@ func runNotes(cmd *cobra.Command, args []string) {
 						}
 					}
 				} else {
-					fmt.Fprintf(os.Stderr, "Warning: could not fetch thread replies: %v\n", err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not fetch thread replies: %v\n", err)
 				}
 			} else {
 				// Get previous message in channel
@@ -222,7 +230,7 @@ func runNotes(cmd *cobra.Command, args []string) {
 					ctx.previous = &history[0]
 					hasContext = true
 				} else if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: could not fetch channel history: %v\n", err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not fetch channel history: %v\n", err)
 				}
 			}
 		}
@@ -234,61 +242,52 @@ func runNotes(cmd *cobra.Command, args []string) {
 
 	// Nothing to do
 	if len(newItems) == 0 {
-		if jsonOutput {
+		if rootOptions.json {
 			out, err := format.FormatJSON(map[string]interface{}{
-				"ok":       true,
-				"captured": 0,
-				"notes":    []noteOutput{},
+				"ok": true, "captured": 0, "notes": []noteOutput{},
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error formatting JSON: %v\n", err)
-				os.Exit(1)
+				return internalError()
 			}
-			fmt.Println(out)
+			fmt.Fprintln(cmd.OutOrStdout(), out)
 		} else {
-			fmt.Println("No new notes found.")
+			fmt.Fprintln(cmd.OutOrStdout(), "No new notes found.")
 		}
-		return
+		return nil
 	}
 
 	// Dry run
-	if notesDryRun {
-		if jsonOutput {
+	if options.dryRun {
+		if rootOptions.json {
 			notes := buildNoteOutputs(newItems, channelMap, client)
 			out, err := format.FormatJSON(map[string]interface{}{
-				"ok":       true,
-				"captured": len(notes),
-				"notes":    notes,
-				"dry_run":  true,
+				"ok": true, "captured": len(notes), "notes": notes, "dry_run": true,
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error formatting JSON: %v\n", err)
-				os.Exit(1)
+				return internalError()
 			}
-			fmt.Println(out)
+			fmt.Fprintln(cmd.OutOrStdout(), out)
 		} else {
-			fmt.Printf("Would capture %d notes:\n", len(newItems))
+			fmt.Fprintf(cmd.OutOrStdout(), "Would capture %d notes:\n", len(newItems))
 			for _, item := range newItems {
 				chName := resolveChannelName(item.Channel, channelMap)
 				userName := client.ResolveUser(item.Message.User)
 				ts := format.FormatTimestamp(item.Message.Ts)
-				text := format.ResolveText(item.Message.Text, client.ResolveUser)
-				text = truncate(text, 60)
-				fmt.Printf("  @%s in #%s (%s): %s\n", userName, chName, ts, text)
+				text := truncate(format.ResolveText(item.Message.Text, client.ResolveUser), 60)
+				fmt.Fprintf(cmd.OutOrStdout(), "  @%s in #%s (%s): %s\n", userName, chName, ts, text)
 			}
 		}
-		return
+		return nil
 	}
 
 	// Ensure notes directory exists
 	if err := os.MkdirAll(resolvedDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating notes directory: %v\n", err)
-		os.Exit(1)
+		return filesystemError(err)
 	}
 
 	// Save notes
 	var outputs []noteOutput
-	now := time.Now().UTC()
+	now = now.UTC()
 
 	// For JSONL: open file in append mode
 	var jsonlFile *os.File
@@ -297,8 +296,7 @@ func runNotes(cmd *cobra.Command, args []string) {
 		var err error
 		jsonlFile, err = os.OpenFile(jsonlPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", jsonlPath, err)
-			os.Exit(1)
+			return filesystemError(err)
 		}
 		defer jsonlFile.Close()
 	}
@@ -349,7 +347,7 @@ func runNotes(cmd *cobra.Command, args []string) {
 			}
 			line, err := json.Marshal(record)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error marshaling note: %v\n", err)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Error marshaling note: %v\n", err)
 				continue
 			}
 			jsonlFile.Write(line)
@@ -358,7 +356,7 @@ func runNotes(cmd *cobra.Command, args []string) {
 			filePath := filepath.Join(resolvedDir, filename)
 			content := buildNoteContent(userName, chName, text, item.Message.Files, msgTime, contextMessages[i], client.ResolveUser)
 			if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", filePath, err)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Error writing %s: %v\n", filePath, err)
 				continue
 			}
 		}
@@ -378,32 +376,29 @@ func runNotes(cmd *cobra.Command, args []string) {
 	}
 
 	// Save state
-	saveState(statePath, state)
+	if err := saveState(statePath, state); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error saving state: %v\n", err)
+	}
 
 	// Output
-	if jsonOutput {
+	if rootOptions.json {
 		out, err := format.FormatJSON(map[string]interface{}{
-			"ok":       true,
-			"captured": len(outputs),
-			"notes":    outputs,
+			"ok": true, "captured": len(outputs), "notes": outputs,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error formatting JSON: %v\n", err)
-			os.Exit(1)
+			return internalError()
 		}
-		fmt.Println(out)
+		fmt.Fprintln(cmd.OutOrStdout(), out)
+	} else if resolvedFormat == "jsonl" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Appended %d notes to %s/notes.jsonl\n", len(outputs), resolvedDir)
 	} else {
-		if resolvedFormat == "jsonl" {
-			fmt.Printf("Appended %d notes to %s/notes.jsonl\n", len(outputs), resolvedDir)
-		} else {
-			fmt.Printf("Captured %d new notes:\n", len(outputs))
-			for _, n := range outputs {
-				text := format.ResolveText(n.Text, client.ResolveUser)
-				text = truncate(text, 60)
-				fmt.Printf("  %s/%s — @%s: %s\n", resolvedDir, n.File, n.User, text)
-			}
+		fmt.Fprintf(cmd.OutOrStdout(), "Captured %d new notes:\n", len(outputs))
+		for _, note := range outputs {
+			text := truncate(format.ResolveText(note.Text, client.ResolveUser), 60)
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s/%s — @%s: %s\n", resolvedDir, note.File, note.User, text)
 		}
 	}
+	return nil
 }
 
 func hasMatchingReaction(reactions []api.Reaction, emoji, selfID string) bool {
@@ -492,7 +487,7 @@ func buildNoteContent(userName, channelName, text string, files []api.File, msgT
 	return b.String()
 }
 
-func buildNoteOutputs(items []api.ReactionsListItem, channelMap map[string]string, client *api.Client) []noteOutput {
+func buildNoteOutputs(items []api.ReactionsListItem, channelMap map[string]string, client interface{ ResolveUser(string) string }) []noteOutput {
 	var out []noteOutput
 	for _, item := range items {
 		chName := resolveChannelName(item.Channel, channelMap)
@@ -514,14 +509,14 @@ func buildNoteOutputs(items []api.ReactionsListItem, channelMap map[string]strin
 	return out
 }
 
-func loadState(path string) notesState {
+func loadState(path string, errOut io.Writer) notesState {
 	state := notesState{Captured: make(map[string]string)}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return state
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: corrupt state file %s: %v\n", path, err)
+		fmt.Fprintf(errOut, "Warning: corrupt state file %s: %v\n", path, err)
 	}
 	if state.Captured == nil {
 		state.Captured = make(map[string]string)
@@ -529,22 +524,10 @@ func loadState(path string) notesState {
 	return state
 }
 
-func saveState(path string, state notesState) {
+func saveState(path string, state notesState) error {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error marshaling state: %v\n", err)
-		return
+		return err
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
-	}
-}
-
-func init() {
-	notesCmd.Flags().StringVar(&notesSince, "since", "7d", "How far back to look (1h, 2d, 7d, 30d)")
-	notesCmd.Flags().StringVar(&notesEmoji, "emoji", "writing_hand", "Reaction emoji to capture")
-	notesCmd.Flags().BoolVar(&notesDryRun, "dry-run", false, "Preview without saving")
-	notesCmd.Flags().StringVar(&notesDir, "dir", "", "Notes directory (default ~/Documents/notes/slack/)")
-	notesCmd.Flags().StringVar(&notesFormat, "format", "", "Output format: jsonl or md (default jsonl, or SLK_NOTES_FORMAT)")
-	rootCmd.AddCommand(notesCmd)
+	return os.WriteFile(path, data, 0644)
 }

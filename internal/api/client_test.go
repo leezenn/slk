@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +13,37 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestClientRequestsUseConfiguredContext(t *testing.T) {
+	type contextKey string
+	const (
+		key  contextKey = "request-marker"
+		want            = "configured-command-context"
+	)
+
+	client := NewClient("test-token")
+	client.SetContext(context.WithValue(context.Background(), key, want))
+	called := false
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		if got := req.Context().Value(key); got != want {
+			t.Fatalf("request context marker = %v, want %q", got, want)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"user_id":"U12345678"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	if _, err := client.AuthTest(); err != nil {
+		t.Fatalf("AuthTest returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("configured transport was not called")
+	}
 }
 
 func TestValidateSlackFileURL(t *testing.T) {

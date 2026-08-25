@@ -1,7 +1,15 @@
 package main
 
-import "github.com/leezenn/slk/cmd"
+import (
+	"context"
+	"os"
+	"os/signal"
+
+	"github.com/leezenn/slk/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	os.Exit(cmd.Execute(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

@@ -2,78 +2,58 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
-	"github.com/leezenn/slk/internal/api"
-	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/format"
 	"github.com/spf13/cobra"
 )
 
-var membersCmd = &cobra.Command{
-	Use:   "members <channel>",
-	Short: "List channel members",
-	Long:  "List members of a Slack channel, group, or DM conversation.",
-	Example: `  slk members general          # Members of #general
+func newMembersCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
+	command := &cobra.Command{
+		Use:   "members <channel>",
+		Short: "List channel members",
+		Long:  "List members of a Slack channel, group, or DM conversation.",
+		Example: `  slk members general          # Members of #general
   slk members C0123456789      # Members by channel ID
   slk members --json general   # Output as JSON`,
-	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		target := args[0]
-
-		result, err := auth.GetToken()
+		Args: argumentValidator(cobra.ExactArgs(1)),
+	}
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		client, err := getClient(cmd, deps)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return err
 		}
-
-		client := api.NewClient(result.Token)
-
-		// Build user cache for name resolution
 		if err := client.BuildUserCache(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: user cache unavailable: %v\n", err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: user cache unavailable: %v\n", err)
 		}
-
-		// Resolve target to channel ID
-		channelID, _, err := resolveTarget(client, target)
+		channelID, _, err := resolveTarget(client, args[0])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
-
 		memberIDs, err := client.GetMembers(channelID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
 
-		if jsonOutput {
+		if rootOptions.json {
 			type memberJSON struct {
 				ID   string `json:"id"`
 				Name string `json:"name"`
 			}
 			members := make([]memberJSON, len(memberIDs))
 			for i, id := range memberIDs {
-				members[i] = memberJSON{
-					ID:   id,
-					Name: client.ResolveUser(id),
-				}
+				members[i] = memberJSON{ID: id, Name: client.ResolveUser(id)}
 			}
 			out, err := format.FormatJSON(members)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return internalError()
 			}
-			fmt.Println(out)
-			return
+			fmt.Fprintln(cmd.OutOrStdout(), out)
+			return nil
 		}
-
 		for _, id := range memberIDs {
-			fmt.Println(client.ResolveUser(id))
+			fmt.Fprintln(cmd.OutOrStdout(), client.ResolveUser(id))
 		}
-	},
-}
-
-func init() {
-	rootCmd.AddCommand(membersCmd)
+		return nil
+	}
+	return command
 }

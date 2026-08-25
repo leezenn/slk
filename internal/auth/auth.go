@@ -25,11 +25,20 @@ type Result struct {
 	Source Source
 }
 
-// GetToken retrieves the Slack token in priority order:
-// 1. OS credential store (Keychain / Secret Service / Credential Manager)
-// 2. SLACK_TOKEN env var
-// 3. Error
-func GetToken() (Result, error) {
+// Store is the credential seam used by the command package.
+type Store interface {
+	Get() (Result, error)
+	Set(token string) error
+	Clear() error
+}
+
+type systemStore struct{}
+
+// NewStore returns the platform credential store.
+func NewStore() Store { return systemStore{} }
+
+// Get retrieves the Slack token using the current compatibility precedence.
+func (systemStore) Get() (Result, error) {
 	token, err := credentialGet(serviceName, accountName)
 	if err == nil && token != "" {
 		return Result{Token: token, Source: SourceKeychain}, nil
@@ -42,13 +51,11 @@ func GetToken() (Result, error) {
 	return Result{Source: SourceNone}, fmt.Errorf("no token found. Run: slk auth <your-token>")
 }
 
-// StoreToken saves a token to the OS credential store.
-func StoreToken(token string) error {
+func (systemStore) Set(token string) error {
 	return credentialSet(serviceName, accountName, token)
 }
 
-// ClearToken removes the token from the OS credential store.
-func ClearToken() error {
+func (systemStore) Clear() error {
 	return credentialDelete(serviceName, accountName)
 }
 

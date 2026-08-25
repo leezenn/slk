@@ -3,129 +3,153 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"os"
-	"os/signal"
 	"runtime"
 	"strings"
 
-	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/spf13/cobra"
 )
 
-var clearAuth bool
+type authOptions struct {
+	clear bool
+}
 
-var authCmd = &cobra.Command{
-	Use:   "auth [token]",
-	Short: "Store or manage Slack API token",
-	Long: `Store a Slack API token, show auth status, or clear stored credentials.
+func newAuthCommand(deps Dependencies, _ *rootOptions) *cobra.Command {
+	options := &authOptions{}
+	command := &cobra.Command{
+		Use:   "auth [token]",
+		Short: "Store or manage Slack API token",
+		Long: `Store a Slack API token, show auth status, or clear stored credentials.
 
 Requires a User OAuth Token (xoxp-). If the Slack app is already installed,
 copy your token from OAuth & Permissions at https://api.slack.com/apps.`,
-	Example: `  slk auth xoxp-your-token-here    # Store token (non-interactive)
+		Example: `  slk auth xoxp-your-token-here    # Store token (non-interactive)
   slk auth                          # Show status or guided setup
   slk auth --clear                  # Remove stored token`,
-	Args: cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		if clearAuth {
-			if err := auth.ClearToken(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error clearing token: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("Token removed from %s.\n", credStoreName())
-			return
+		Args: argumentValidator(cobra.MaximumNArgs(1)),
+	}
+	command.Flags().BoolVar(&options.clear, "clear", false, "Remove stored token")
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		if err := checkContext(cmd.Context()); err != nil {
+			return err
 		}
-
-		if len(args) == 1 {
-			storeToken(args[0])
-			return
-		}
-
-		// No args: show status or guided setup
-		result, err := auth.GetToken()
+		store, err := deps.credentialStore()
 		if err != nil {
-			guidedSetup()
-			return
+			return err
+		}
+		if options.clear {
+			if err := store.Clear(); err != nil {
+				return credentialBackendError(err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Token removed from %s.\n", credStoreName())
+			return nil
+		}
+		if len(args) == 1 {
+			return storeToken(cmd, deps, store, args[0])
 		}
 
-		fmt.Printf("Status: configured\n")
-		fmt.Printf("Source: %s\n", result.Source)
-		fmt.Printf("Token:  %s\n", auth.MaskToken(result.Token))
-	},
+		result, err := store.Get()
+		if err != nil {
+			return guidedSetup(cmd, deps, store)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Status: configured")
+		fmt.Fprintf(cmd.OutOrStdout(), "Source: %s\n", result.Source)
+		fmt.Fprintf(cmd.OutOrStdout(), "Token:  %s\n", auth.MaskToken(result.Token))
+		return nil
+	}
+	return command
 }
 
-func storeToken(raw string) {
+func storeToken(cmd *cobra.Command, deps Dependencies, store auth.Store, raw string) error {
 	token := strings.TrimSpace(raw)
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "Error: empty token")
-		os.Exit(1)
+		return invalidArgument(cmd, "empty token")
 	}
 	if !strings.HasPrefix(token, "xoxp-") {
-		fmt.Fprintln(os.Stderr, "Error: expected a User OAuth Token (starts with xoxp-)")
-		fmt.Fprintln(os.Stderr, "Bot tokens (xoxb-) are not supported — Slack's search and DM APIs require a user token.")
-		os.Exit(1)
+		return invalidArgument(cmd, "expected a User OAuth Token (starts with xoxp-); bot tokens are not supported")
 	}
-	// Validate against Slack API before storing
-	client := api.NewClient(token)
+	client, err := deps.client(token)
+	if err != nil {
+		return err
+	}
+	client.SetContext(cmd.Context())
+	client.SetErrorWriter(cmd.ErrOrStderr())
 	result, err := client.AuthTest()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: token rejected by Slack: %v\n", err)
-		os.Exit(1)
+		return newCommandError(ErrorAuthFailed, "Slack rejected the credential.", "Run 'slk auth' to reconnect, then retry.")
 	}
-	if err := auth.StoreToken(token); err != nil {
-		fmt.Fprintf(os.Stderr, "Error storing token: %v\n", err)
-		os.Exit(1)
+	if err := store.Set(token); err != nil {
+		return credentialBackendError(err)
 	}
-	fmt.Printf("Authenticated as @%s in %s.\n", result.User, result.Team)
-	fmt.Printf("Token stored in %s.\n", credStoreName())
+	fmt.Fprintf(cmd.OutOrStdout(), "Authenticated as @%s in %s.\n", result.User, result.Team)
+	fmt.Fprintf(cmd.OutOrStdout(), "Token stored in %s.\n", credStoreName())
+	return nil
 }
 
-func guidedSetup() {
-	// Handle Ctrl+C
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+func guidedSetup(cmd *cobra.Command, deps Dependencies, store auth.Store) error {
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "No token configured. Let's set one up.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "You need a Slack User OAuth Token (xoxp-...).")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "If your workspace already has a Slack app installed:")
+	fmt.Fprintln(out, "  1. Go to https://api.slack.com/apps")
+	fmt.Fprintln(out, "  2. Select your app")
+	fmt.Fprintln(out, "  3. OAuth & Permissions -> User OAuth Token -> Copy")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "If not, create one:")
+	fmt.Fprintln(out, "  1. https://api.slack.com/apps -> Create New App -> From scratch")
+	fmt.Fprintln(out, "  2. OAuth & Permissions -> add these User Token Scopes:")
+	fmt.Fprintln(out, "     channels:history, channels:read, groups:history, groups:read,")
+	fmt.Fprintln(out, "     im:history, im:read, mpim:history, mpim:read,")
+	fmt.Fprintln(out, "     search:read, users:read, files:read")
+	fmt.Fprintln(out, "  3. Install to Workspace -> Copy User OAuth Token")
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Token will be stored in %s.\n", credStoreName())
+	fmt.Fprintln(out, "For non-interactive use: slk auth <token>")
+	fmt.Fprintln(out, "Or set SLACK_TOKEN env var.")
+	fmt.Fprintln(out)
+	fmt.Fprint(out, "Paste your xoxp- token: ")
+
+	token, err := readLine(cmd)
+	if err != nil {
+		return err
+	}
+	return storeToken(cmd, deps, store, token)
+}
+
+func readLine(cmd *cobra.Command) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	completed := make(chan result, 1)
 	go func() {
-		<-sig
-		fmt.Fprintln(os.Stderr, "\nAborted.")
-		os.Exit(130)
+		scanner := bufio.NewScanner(cmd.InOrStdin())
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				completed <- result{err: newCommandError(
+					ErrorInternal,
+					"slk could not read the token from the terminal.",
+					"Run 'slk auth' and try again.",
+				)}
+				return
+			}
+			completed <- result{err: interruptedError()}
+			return
+		}
+		completed <- result{line: scanner.Text()}
 	}()
 
-	fmt.Println("No token configured. Let's set one up.")
-	fmt.Println()
-	fmt.Println("You need a Slack User OAuth Token (xoxp-...).")
-	fmt.Println()
-	fmt.Println("If your workspace already has a Slack app installed:")
-	fmt.Println("  1. Go to https://api.slack.com/apps")
-	fmt.Println("  2. Select your app")
-	fmt.Println("  3. OAuth & Permissions -> User OAuth Token -> Copy")
-	fmt.Println()
-	fmt.Println("If not, create one:")
-	fmt.Println("  1. https://api.slack.com/apps -> Create New App -> From scratch")
-	fmt.Println("  2. OAuth & Permissions -> add these User Token Scopes:")
-	fmt.Println("     channels:history, channels:read, groups:history, groups:read,")
-	fmt.Println("     im:history, im:read, mpim:history, mpim:read,")
-	fmt.Println("     search:read, users:read, files:read")
-	fmt.Println("  3. Install to Workspace -> Copy User OAuth Token")
-	fmt.Println()
-	fmt.Printf("Token will be stored in %s.\n", credStoreName())
-	fmt.Println("For non-interactive use: slk auth <token>")
-	fmt.Println("Or set SLACK_TOKEN env var.")
-	fmt.Println()
-	fmt.Print("Paste your xoxp- token: ")
-
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		fmt.Fprintln(os.Stderr, "\nAborted.")
-		os.Exit(130)
+	select {
+	case <-cmd.Context().Done():
+		return "", interruptedError()
+	case result := <-completed:
+		if result.err != nil {
+			return "", result.err
+		}
+		return result.line, nil
 	}
-
-	token := strings.TrimSpace(scanner.Text())
-	if token == "" {
-		fmt.Fprintln(os.Stderr, "No token provided.")
-		os.Exit(1)
-	}
-
-	storeToken(token)
 }
 
 func credStoreName() string {
@@ -139,9 +163,4 @@ func credStoreName() string {
 	default:
 		return "credential store"
 	}
-}
-
-func init() {
-	authCmd.Flags().BoolVar(&clearAuth, "clear", false, "Remove stored token")
-	rootCmd.AddCommand(authCmd)
 }

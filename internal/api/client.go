@@ -1,13 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +19,8 @@ const baseURL = "https://slack.com/api/"
 type Client struct {
 	token       string
 	httpClient  *http.Client
+	ctx         context.Context
+	errOut      io.Writer
 	userCache   map[string]string // user_id -> display_name
 	users       []User            // full user list for reverse lookups
 	selfID      string            // authenticated user's ID
@@ -32,9 +34,27 @@ func NewClient(token string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		ctx:         context.Background(),
+		errOut:      io.Discard,
 		userCache:   make(map[string]string),
 		warnedUsers: make(map[string]bool),
 	}
+}
+
+// SetContext binds subsequent requests to the command invocation context.
+func (c *Client) SetContext(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.ctx = ctx
+}
+
+// SetErrorWriter routes non-fatal diagnostics through the command stream.
+func (c *Client) SetErrorWriter(errOut io.Writer) {
+	if errOut == nil {
+		errOut = io.Discard
+	}
+	c.errOut = errOut
 }
 
 // AuthTestResult holds the response from Slack's auth.test API.
@@ -233,7 +253,7 @@ type SearchPaging struct {
 func (c *Client) post(method string, params url.Values) ([]byte, error) {
 	reqURL := baseURL + method
 
-	req, err := http.NewRequest("POST", reqURL, strings.NewReader(params.Encode()))
+	req, err := http.NewRequestWithContext(c.ctx, "POST", reqURL, strings.NewReader(params.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
@@ -762,7 +782,7 @@ func (c *Client) ResolveUser(userID string) string {
 		return name
 	}
 	if len(c.userCache) > 0 && !c.warnedUsers[userID] {
-		fmt.Fprintf(os.Stderr, "Warning: unknown user ID %q not in cache\n", userID)
+		fmt.Fprintf(c.errOut, "Warning: unknown user ID %q not in cache\n", userID)
 		c.warnedUsers[userID] = true
 	}
 	return userID
@@ -849,7 +869,7 @@ func (c *Client) ResolveDisplayNameToUsername(displayName string) string {
 
 	user, err := c.FindUserByName(displayName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not resolve display name %q to username\n", displayName)
+		fmt.Fprintf(c.errOut, "Warning: could not resolve display name %q to username\n", displayName)
 		return displayName
 	}
 	return user.Name
@@ -910,7 +930,7 @@ func (c *Client) DownloadFile(fileURL string) (io.ReadCloser, int64, error) {
 		return nil, 0, err
 	}
 
-	req, err := http.NewRequest("GET", fileURL, nil)
+	req, err := http.NewRequestWithContext(c.ctx, "GET", fileURL, nil)
 	if err != nil {
 		return nil, 0, errors.New("creating Slack file request")
 	}

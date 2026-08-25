@@ -2,97 +2,77 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
-	"github.com/leezenn/slk/internal/api"
-	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/format"
 	"github.com/spf13/cobra"
 )
 
-var threadLimit int
+type threadOptions struct {
+	limit int
+}
 
-var threadCmd = &cobra.Command{
-	Use:   "thread <channel> <thread-ts>",
-	Short: "Read thread replies",
-	Long: `Read all replies in a Slack thread.
+func newThreadCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
+	options := &threadOptions{limit: 50}
+	command := &cobra.Command{
+		Use:   "thread <channel> <thread-ts>",
+		Short: "Read thread replies",
+		Long: `Read all replies in a Slack thread.
 
 The channel can be a name or ID. The thread-ts is the timestamp of the
 parent message (visible in Slack message URLs or from the read command).`,
-	Example: `  slk thread general 1705312325.000100
+		Example: `  slk thread general 1705312325.000100
   slk thread C12345 1705312325.000100 --limit 100`,
-	Args: cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		channel := args[0]
-		threadTs := args[1]
-
-		result, err := auth.GetToken()
+		Args: argumentValidator(cobra.ExactArgs(2)),
+	}
+	command.Flags().IntVar(&options.limit, "limit", 50, "Maximum number of replies to retrieve")
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		client, err := getClient(cmd, deps)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return err
 		}
-
-		client := api.NewClient(result.Token)
 		selfID, err := identifySelf(client)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
 		if err := client.BuildUserCache(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: user cache unavailable: %v\n", err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: user cache unavailable: %v\n", err)
 		}
-
-		// Resolve channel
-		channelID, channelName, err := resolveChannel(client, channel)
+		channelID, channelName, err := resolveChannel(client, args[0])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
-
-		msgs, err := client.GetReplies(channelID, threadTs, threadLimit)
+		messages, err := client.GetReplies(channelID, args[1], options.limit)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return slackAPIError(err)
 		}
-
-		if jsonOutput {
-			jsonMsgs := format.MessagesToJSON(msgs, client.ResolveUser, selfID)
+		if rootOptions.json {
 			out, err := format.FormatJSON(map[string]interface{}{
-				"ok":        true,
-				"channel":   channelName,
-				"thread_ts": threadTs,
-				"messages":  jsonMsgs,
+				"ok": true, "channel": channelName, "thread_ts": args[1],
+				"messages": format.MessagesToJSON(messages, client.ResolveUser, selfID),
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return internalError()
 			}
-			fmt.Println(out)
-			return
+			fmt.Fprintln(cmd.OutOrStdout(), out)
+			return nil
 		}
-
-		fmt.Print(format.FormatMessages(msgs, channelName, client.ResolveUser, selfID))
-	},
+		fmt.Fprint(cmd.OutOrStdout(), format.FormatMessages(messages, channelName, client.ResolveUser, selfID))
+		return nil
+	}
+	return command
 }
 
-func resolveChannel(client *api.Client, channel string) (string, string, error) {
-	// @username -> DM (reuse read's resolveTarget)
+func resolveChannel(client targetResolver, channel string) (string, string, error) {
 	if strings.HasPrefix(channel, "@") {
 		return resolveTarget(client, channel)
 	}
-	// Looks like a channel ID
 	if len(channel) >= 9 && (channel[0] == 'C' || channel[0] == 'G' || channel[0] == 'D') {
 		return channel, channel, nil
 	}
-	ch, err := client.FindChannelByName(channel)
+	resolved, err := client.FindChannelByName(channel)
 	if err != nil {
 		return "", "", err
 	}
-	return ch.ID, ch.Name, nil
-}
-
-func init() {
-	threadCmd.Flags().IntVar(&threadLimit, "limit", 50, "Maximum number of replies to retrieve")
-	rootCmd.AddCommand(threadCmd)
+	return resolved.ID, resolved.Name, nil
 }
