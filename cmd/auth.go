@@ -11,7 +11,8 @@ import (
 )
 
 type authOptions struct {
-	clear bool
+	clear       bool
+	interactive bool
 }
 
 func newAuthCommand(deps Dependencies, _ *rootOptions) *cobra.Command {
@@ -25,11 +26,16 @@ Requires a User OAuth Token (xoxp-). If the Slack app is already installed,
 copy your token from OAuth & Permissions at https://api.slack.com/apps.`,
 		Example: `  slk auth xoxp-your-token-here    # Store token (non-interactive)
   slk auth                          # Show status or guided setup
+  slk auth --interactive            # Reconnect interactively
   slk auth --clear                  # Remove stored token`,
 		Args: argumentValidator(cobra.MaximumNArgs(1)),
 	}
 	command.Flags().BoolVar(&options.clear, "clear", false, "Remove stored token")
+	command.Flags().BoolVar(&options.interactive, "interactive", false, "Prompt for a token even when one is already configured")
 	command.RunE = func(cmd *cobra.Command, args []string) error {
+		if options.interactive && (options.clear || len(args) > 0) {
+			return conflictingOptions(cmd, "--interactive cannot be combined with --clear or a token argument")
+		}
 		if err := checkContext(cmd.Context()); err != nil {
 			return err
 		}
@@ -44,13 +50,16 @@ copy your token from OAuth & Permissions at https://api.slack.com/apps.`,
 			fmt.Fprintf(cmd.OutOrStdout(), "Token removed from %s.\n", credStoreName())
 			return nil
 		}
+		if options.interactive {
+			return guidedSetup(cmd, deps, store, true)
+		}
 		if len(args) == 1 {
 			return storeToken(cmd, deps, store, args[0])
 		}
 
 		result, err := store.Get()
 		if err != nil {
-			return guidedSetup(cmd, deps, store)
+			return guidedSetup(cmd, deps, store, false)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Status: configured")
 		fmt.Fprintf(cmd.OutOrStdout(), "Source: %s\n", result.Source)
@@ -76,19 +85,87 @@ func storeToken(cmd *cobra.Command, deps Dependencies, store auth.Store, raw str
 	client.SetErrorWriter(cmd.ErrOrStderr())
 	result, err := client.AuthTest()
 	if err != nil {
-		return newCommandError(ErrorAuthFailed, "Slack rejected the credential.", "Run 'slk auth' to reconnect, then retry.")
+		return newCommandError(ErrorAuthFailed, "Slack rejected the credential.", "Run 'slk auth --interactive' to reconnect, then retry.")
 	}
 	if err := store.Set(token); err != nil {
 		return credentialBackendError(err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Authenticated as @%s in %s.\n", result.User, result.Team)
 	fmt.Fprintf(cmd.OutOrStdout(), "Token stored in %s.\n", credStoreName())
+	for _, line := range authAccessSummary(result.Scopes) {
+		fmt.Fprintln(cmd.OutOrStdout(), line)
+	}
 	return nil
 }
 
-func guidedSetup(cmd *cobra.Command, deps Dependencies, store auth.Store) error {
+func authAccessSummary(scopes []string) []string {
+	if len(scopes) == 0 {
+		return []string{"Access: Slack accepted the token but did not report enough information to verify feature permissions."}
+	}
+
+	granted := make(map[string]bool, len(scopes))
+	for _, scope := range scopes {
+		granted[scope] = true
+	}
+
+	requirements := []struct {
+		feature string
+		scopes  []string
+	}{
+		{feature: "public channels", scopes: []string{"channels:history", "channels:read"}},
+		{feature: "private channels", scopes: []string{"groups:history", "groups:read"}},
+		{feature: "direct messages", scopes: []string{"im:history", "im:read"}},
+		{feature: "group messages", scopes: []string{"mpim:history", "mpim:read"}},
+		{feature: "workspace search", scopes: []string{"search:read"}},
+		{feature: "people and identity", scopes: []string{"users:read"}},
+		{feature: "file downloads", scopes: []string{"files:read"}},
+		{feature: "reactions and notes", scopes: []string{"reactions:read"}},
+	}
+
+	var missingFeatures, missingScopes []string
+	for _, requirement := range requirements {
+		missing := false
+		for _, scope := range requirement.scopes {
+			if !granted[scope] {
+				missing = true
+				missingScopes = append(missingScopes, scope)
+			}
+		}
+		if missing {
+			missingFeatures = append(missingFeatures, requirement.feature)
+		}
+	}
+
+	if len(missingFeatures) == 0 {
+		return []string{"Access: verified for all current slk read features."}
+	}
+	return []string{
+		"Access is limited: " + humanList(missingFeatures) + " may not work.",
+		"Missing Slack scopes: " + strings.Join(missingScopes, ", ") + ".",
+		"Update the Slack app permissions, reinstall it, then run 'slk auth --interactive'.",
+	}
+}
+
+func humanList(values []string) string {
+	switch len(values) {
+	case 0:
+		return ""
+	case 1:
+		return values[0]
+	case 2:
+		return values[0] + " and " + values[1]
+	default:
+		return strings.Join(values[:len(values)-1], ", ") + ", and " + values[len(values)-1]
+	}
+}
+
+func guidedSetup(cmd *cobra.Command, deps Dependencies, store auth.Store, reconnect bool) error {
 	out := cmd.OutOrStdout()
-	fmt.Fprintln(out, "No token configured. Let's set one up.")
+	if reconnect {
+		fmt.Fprintln(out, "Let's reconnect Slack with a new token.")
+	} else {
+		fmt.Fprintln(out, "No token configured. Let's set one up.")
+	}
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "You need a Slack User OAuth Token (xoxp-...).")
 	fmt.Fprintln(out)
@@ -102,7 +179,7 @@ func guidedSetup(cmd *cobra.Command, deps Dependencies, store auth.Store) error 
 	fmt.Fprintln(out, "  2. OAuth & Permissions -> add these User Token Scopes:")
 	fmt.Fprintln(out, "     channels:history, channels:read, groups:history, groups:read,")
 	fmt.Fprintln(out, "     im:history, im:read, mpim:history, mpim:read,")
-	fmt.Fprintln(out, "     search:read, users:read, files:read")
+	fmt.Fprintln(out, "     reactions:read, search:read, users:read, files:read")
 	fmt.Fprintln(out, "  3. Install to Workspace -> Copy User OAuth Token")
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Token will be stored in %s.\n", credStoreName())

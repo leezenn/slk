@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,15 +60,16 @@ func (c *Client) SetErrorWriter(errOut io.Writer) {
 
 // AuthTestResult holds the response from Slack's auth.test API.
 type AuthTestResult struct {
-	User   string `json:"user"`
-	Team   string `json:"team"`
-	TeamID string `json:"team_id"`
-	UserID string `json:"user_id"`
+	User   string   `json:"user"`
+	Team   string   `json:"team"`
+	TeamID string   `json:"team_id"`
+	UserID string   `json:"user_id"`
+	Scopes []string `json:"-"`
 }
 
-// AuthTest validates the token against Slack's auth.test endpoint.
+// AuthTest validates the token and reports the scopes Slack granted to it.
 func (c *Client) AuthTest() (*AuthTestResult, error) {
-	body, err := c.post("auth.test", url.Values{})
+	body, headers, err := c.postWithHeaders("auth.test", url.Values{})
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +77,25 @@ func (c *Client) AuthTest() (*AuthTestResult, error) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("parsing auth.test: %w", err)
 	}
+	result.Scopes = parseScopes(headers.Get("X-OAuth-Scopes"))
 	return &result, nil
+}
+
+func parseScopes(header string) []string {
+	seen := make(map[string]struct{})
+	for _, scope := range strings.Split(header, ",") {
+		scope = strings.TrimSpace(scope)
+		if scope != "" {
+			seen[scope] = struct{}{}
+		}
+	}
+
+	scopes := make([]string, 0, len(seen))
+	for scope := range seen {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	return scopes
 }
 
 // Identify calls auth.test and caches the authenticated user's ID.
@@ -251,38 +271,43 @@ type SearchPaging struct {
 
 // post makes a POST request to a Slack API method.
 func (c *Client) post(method string, params url.Values) ([]byte, error) {
+	body, _, err := c.postWithHeaders(method, params)
+	return body, err
+}
+
+func (c *Client) postWithHeaders(method string, params url.Values) ([]byte, http.Header, error) {
 	reqURL := baseURL + method
 
 	req, err := http.NewRequestWithContext(c.ctx, "POST", reqURL, strings.NewReader(params.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
+		return nil, nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.doWithRetry(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
+		return nil, nil, fmt.Errorf("reading response: %w", err)
 	}
 
 	var base SlackResponse
 	if err := json.Unmarshal(body, &base); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
+		return nil, nil, fmt.Errorf("parsing response: %w", err)
 	}
 	if !base.OK {
 		if isAuthError(base.Error) {
-			return nil, fmt.Errorf("slack API error: %s\n\nYour token needs refreshing. Get a new one from https://api.slack.com/apps\n(OAuth & Permissions → User OAuth Token) then run: slk auth xoxp-...", base.Error)
+			return nil, nil, fmt.Errorf("slack API error: %s\n\nYour token needs refreshing. Get a new one from https://api.slack.com/apps\n(OAuth & Permissions → User OAuth Token) then run: slk auth xoxp-...", base.Error)
 		}
-		return nil, fmt.Errorf("slack API error: %s", base.Error)
+		return nil, nil, fmt.Errorf("slack API error: %s", base.Error)
 	}
 
-	return body, nil
+	return body, resp.Header.Clone(), nil
 }
 
 // isAuthError returns true for Slack API errors indicating an invalid or expired token.

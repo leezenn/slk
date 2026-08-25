@@ -15,7 +15,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func TestClientRequestsUseConfiguredContext(t *testing.T) {
+func TestAuthTestUsesConfiguredContextAndReturnsScopes(t *testing.T) {
 	type contextKey string
 	const (
 		key  contextKey = "request-marker"
@@ -33,13 +33,19 @@ func TestClientRequestsUseConfiguredContext(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"user_id":"U12345678"}`)),
-			Header:     make(http.Header),
-			Request:    req,
+			Header: http.Header{
+				"X-Oauth-Scopes": {"users:read, channels:read, users:read"},
+			},
+			Request: req,
 		}, nil
 	})
 
-	if _, err := client.AuthTest(); err != nil {
+	result, err := client.AuthTest()
+	if err != nil {
 		t.Fatalf("AuthTest returned error: %v", err)
+	}
+	if got := strings.Join(result.Scopes, ","); got != "channels:read,users:read" {
+		t.Fatalf("scopes = %q, want normalized scopes", got)
 	}
 	if !called {
 		t.Fatal("configured transport was not called")

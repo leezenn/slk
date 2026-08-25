@@ -17,9 +17,11 @@ go install github.com/leezenn/slk@latest
 
 ## Setup
 
-**Human:** run `slk auth` and follow the interactive prompts.
+**Human:** run `slk auth` and follow the interactive prompts. To replace an existing credential, run `slk auth --interactive`.
 
-**Agent:** use `slk auth <token>` (non-interactive) or set `SLACK_TOKEN` env var. Do not run bare `slk auth` — it blocks on stdin.
+**Agent:** use `slk auth <token>` (non-interactive) or set `SLACK_TOKEN` env var. Do not run bare `slk auth` unattended—it may prompt on stdin when no credential exists.
+
+When storing a token, `slk` verifies the permissions Slack granted and explains which current read features may be unavailable and how to enable them.
 
 Run `slk whoami` to show the authenticated Slack handle, display name, user ID, and workspace. Human-readable message output marks that user's messages with `(me)`; structured message and search output includes `"is_self": true`.
 

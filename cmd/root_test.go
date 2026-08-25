@@ -188,6 +188,8 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		args []string
 	}{
 		{name: "auth shape", args: []string{"auth", "one", "two"}},
+		{name: "interactive auth token", args: []string{"auth", "--interactive", "xoxp-placeholder"}},
+		{name: "interactive auth clear", args: []string{"auth", "--interactive", "--clear"}},
 		{name: "invalid auth token", args: []string{"auth", "xoxb-not-supported"}},
 		{name: "channels shape", args: []string{"channels", "extra"}},
 		{name: "download shape", args: []string{"download"}},
