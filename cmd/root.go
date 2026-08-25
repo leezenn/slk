@@ -33,6 +33,7 @@ Environment:
   slk whoami
   slk activity
   slk activity @alex --since 8h
+  slk recent --type dm
   slk channels --type dm
   slk read general --limit 50
   slk read @john --after 1d
@@ -55,6 +56,7 @@ Tip: quoting short fragments from results helps users verify your interpretation
 		newNotesCommand(deps, options),
 		newOpenCommand(deps, options),
 		newReadCommand(deps, options),
+		newRecentCommand(deps, options),
 		newReplyCommand(deps, options),
 		newSearchCommand(deps, options),
 		newThreadCommand(deps, options),

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -87,7 +86,7 @@ grouped by conversation and visible only through the authenticated user's access
 		if err != nil {
 			return err
 		}
-		cutoff, err := activityCutoff(options.since, now)
+		cutoff, err := parseCutoffAt(options.since, now)
 		if err != nil {
 			return invalidArgument(cmd, "--since: "+err.Error())
 		}
@@ -102,18 +101,6 @@ grouped by conversation and visible only through the authenticated user's access
 		return runActivity(cmd, rootOptions, client, person, cutoff, now, options.limit)
 	}
 	return command
-}
-
-func activityCutoff(since string, now time.Time) (time.Time, error) {
-	epoch, err := parseTimeArgAt(since, now)
-	if err != nil {
-		return time.Time{}, err
-	}
-	seconds, err := strconv.ParseInt(epoch, 10, 64)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid time")
-	}
-	return time.Unix(seconds, 0), nil
 }
 
 func runActivity(cmd *cobra.Command, rootOptions *rootOptions, client activityClient, person string, cutoff, now time.Time, limit int) error {
@@ -279,13 +266,7 @@ func formatActivity(target *api.User, selfID string, cutoff, now time.Time, grou
 		latest := group.Items[0].Match
 		fmt.Fprintf(&out, "\n%s — latest %s (%s)\n", format.SearchChannelLabel(group.Channel, resolveUser), format.FormatRelativeTime(latest.Ts, now), format.FormatTimestamp(latest.Ts))
 		for _, item := range group.Items {
-			author := resolveUser(item.Match.User)
-			if author == item.Match.User && item.Match.Username != "" {
-				author = item.Match.Username
-			}
-			if item.Match.User == selfID {
-				author += " (me)"
-			}
+			author := format.SearchAuthorLabel(item.Match, resolveUser, selfID)
 			fmt.Fprintf(&out, "  %s · %s · @%s\n", activityReasonLabel(item.Reasons), format.FormatRelativeTime(item.Match.Ts, now), author)
 			fmt.Fprintf(&out, "    %s\n", format.ResolveText(item.Match.Text, resolveUser))
 			for _, file := range item.Match.Files {

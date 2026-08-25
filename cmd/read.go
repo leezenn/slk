@@ -166,6 +166,21 @@ func parseTimeArg(val string) (string, error) {
 	return parseTimeArgAt(val, time.Now())
 }
 
+func parseCutoffAt(val string, now time.Time) (time.Time, error) {
+	epoch, err := parseTimeArgAt(val, now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if epoch == "" {
+		return time.Time{}, nil
+	}
+	seconds, err := strconv.ParseInt(epoch, 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid time")
+	}
+	return time.Unix(seconds, 0), nil
+}
+
 func parseTimeArgAt(val string, now time.Time) (string, error) {
 	if val == "" {
 		return "", nil

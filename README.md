@@ -27,6 +27,12 @@ Run `slk whoami` to show the authenticated Slack handle, display name, user ID, 
 
 Human-readable message and search attachment lines include a runnable command such as `slk download F0123456789`; structured attachment objects expose safe metadata and the same command in `download_command`, while private URL fields are intentionally omitted. The download command accepts only stable file IDs; Slack resolves the private URL internally, so agents neither extract nor provide it. Default and JSON download results both report the file ID, output path, and byte count. Downloads refuse to overwrite existing files unless `--force` is explicit, and bearer credentials are restricted to HTTPS Slack-owned hosts.
 
+## Recent conversations
+
+`slk recent` shows conversations ordered by their newest searchable message. Use `--type dm` or `--type channel` to narrow the view, and `--since` to set the temporal window. The command scans at most 100 recent search hits, returns one representative hit per conversation, and provides `slk open` and `slk read` continuations.
+
+This is a bounded pulse of searchable activity, not an unread counter or a guarantee of each conversation's exact latest message.
+
 ## Activity around people
 
 `slk activity` shows recent searchable activity around the authenticated user. Pass a person to move the center: `slk activity @alex --since 8h`. Handles, display names, and Slack user IDs are accepted.
@@ -47,7 +53,8 @@ A good tool registration entry looks like:
 slk - Explore Slack activity, research workspace context, and reply to existing message threads.
       Run `slk --help` and `slk <command> --help` before first use.
       Run `slk whoami` before interpreting authors so you know which user is "me".
-      Start with `slk activity` for recent searchable activity around the user, or `slk activity @person` to move the center.
+      Start with `slk recent` to see where conversation is happening.
+      Use `slk activity` for recent searchable activity around the user, or `slk activity @person` to move the center.
       `slk search` for locating specific content (full workspace history).
       Follow rendered `slk open '<permalink>'` commands to inspect a search hit in context.
       `slk read` for chronological context (recent conversation flow).

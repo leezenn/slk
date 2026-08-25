@@ -96,7 +96,7 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 
 var commandNames = []string{
 	"activity", "auth", "channels", "download", "members", "notes", "open",
-	"read", "reply", "search", "thread", "users", "whoami",
+	"read", "recent", "reply", "search", "thread", "users", "whoami",
 }
 
 func TestNewRootCommandBuildsFreshRunECommands(t *testing.T) {
@@ -200,6 +200,10 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		{name: "notes shape", args: []string{"notes", "extra"}},
 		{name: "open shape", args: []string{"open"}},
 		{name: "read shape", args: []string{"read"}},
+		{name: "recent shape", args: []string{"recent", "extra"}},
+		{name: "recent limit", args: []string{"recent", "--limit", "0"}},
+		{name: "recent type", args: []string{"recent", "--type", "unknown"}},
+		{name: "recent time", args: []string{"recent", "--since", "not-time"}},
 		{name: "reply shape", args: []string{"reply"}},
 		{name: "reply text", args: []string{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100"}},
 		{name: "reply permalink", args: []string{"reply", "not-a-permalink", "--text", "hello"}},
@@ -246,6 +250,7 @@ func TestCanceledContextStopsEveryCommandBeforeDependencies(t *testing.T) {
 		{"activity"}, {"auth"}, {"channels"}, {"download", "F0123456789"}, {"members", "general"},
 		{"notes"}, {"open", "https://workspace.slack.com/archives/C12345678/p1705312325000100"},
 		{"read", "general"},
+		{"recent"},
 		{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--text", "hello"},
 		{"search", "query"}, {"thread", "general", "1705312325.000100"},
 		{"users"}, {"whoami"},

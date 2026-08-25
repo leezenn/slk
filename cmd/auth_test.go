@@ -63,7 +63,7 @@ func TestAuthAccessSummary(t *testing.T) {
 				"reactions:read", "users:read",
 			},
 			want: []string{
-				"Access is limited: workspace search/activity and file downloads may not work.",
+				"Access is limited: workspace discovery and file downloads may not work.",
 				"Missing Slack scopes: search:read, files:read.",
 				"Update the Slack app permissions, reinstall it, then run 'slk auth --interactive'.",
 				"Writing: thread replies require chat:write.",

@@ -356,6 +356,15 @@ func SearchChannelLabel(channel api.SearchChannel, resolveUser func(string) stri
 	return channel.ID
 }
 
+// SearchAuthorLabel returns the resolved author label for a search hit.
+func SearchAuthorLabel(match api.SearchMatch, resolveUser func(string) string, selfID string) string {
+	author := resolveUser(match.User)
+	if author == match.User && match.Username != "" {
+		author = match.Username
+	}
+	return markSelf(author, match.User, selfID)
+}
+
 func channelType(ch api.Channel) string {
 	switch {
 	case ch.IsIM:
@@ -426,11 +435,7 @@ func FormatSearchResults(result *api.SearchResult, resolveUser func(string) stri
 		text := ResolveText(m.Text, resolveUser)
 		chName := SearchChannelLabel(m.Channel, resolveUser)
 		fmt.Fprintf(&b, "%s \u2014 %s\n", chName, ts)
-		author := resolveUser(m.User)
-		if author == m.User && m.Username != "" {
-			author = m.Username
-		}
-		author = markSelf(author, m.User, selfID)
+		author := SearchAuthorLabel(m, resolveUser, selfID)
 		fmt.Fprintf(&b, "  @%s: %s\n", author, text)
 
 		// Files
