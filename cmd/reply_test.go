@@ -18,10 +18,11 @@ type fakeReplyClient struct {
 	channelID    string
 	threadTs     string
 	text         string
+	prefix       string
 }
 
-func (f *fakeReplyClient) PostReply(channelID, threadTs, text string) (*api.PostMessageResult, error) {
-	f.channelID, f.threadTs, f.text = channelID, threadTs, text
+func (f *fakeReplyClient) PostReply(channelID, threadTs, text, prefix string) (*api.PostMessageResult, error) {
+	f.channelID, f.threadTs, f.text, f.prefix = channelID, threadTs, text, prefix
 	return f.posted, f.postErr
 }
 
@@ -41,11 +42,11 @@ func TestRunReplyReturnsCanonicalReceipt(t *testing.T) {
 	command.SetErr(&stderr)
 	target := replyTarget{channelID: "C12345678", threadTs: "1700000000.000001"}
 
-	if err := runReply(command, &rootOptions{}, client, target, "We will ship the fix tomorrow."); err != nil {
+	if err := runReply(command, &rootOptions{}, client, target, "We will ship the fix tomorrow.", ":mechanical_arm: agent assisted response."); err != nil {
 		t.Fatalf("runReply returned error: %v", err)
 	}
-	if client.channelID != target.channelID || client.threadTs != target.threadTs || client.text != "We will ship the fix tomorrow." {
-		t.Fatalf("posted arguments = channel %q thread %q text %q", client.channelID, client.threadTs, client.text)
+	if client.channelID != target.channelID || client.threadTs != target.threadTs || client.text != "We will ship the fix tomorrow." || client.prefix != ":mechanical_arm: agent assisted response." {
+		t.Fatalf("posted arguments = channel %q thread %q text %q prefix %q", client.channelID, client.threadTs, client.text, client.prefix)
 	}
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
@@ -68,7 +69,7 @@ func TestRunReplyReturnsJSONReceipt(t *testing.T) {
 	command.SetOut(&stdout)
 	target := replyTarget{channelID: "C12345678", threadTs: "1700000000.000001"}
 
-	if err := runReply(command, &rootOptions{json: true}, client, target, "hello"); err != nil {
+	if err := runReply(command, &rootOptions{json: true}, client, target, "hello", "prefix"); err != nil {
 		t.Fatalf("runReply returned error: %v", err)
 	}
 	for _, want := range []string{`"posted": true`, `"permalink": "` + permalink + `"`, `"open_command": "slk open '` + permalink + `'"`} {
@@ -89,7 +90,7 @@ func TestRunReplyFallsBackWhenPermalinkLookupFails(t *testing.T) {
 	command.SetErr(&stderr)
 	target := replyTarget{channelID: "C12345678", threadTs: "1700000000.000001"}
 
-	if err := runReply(command, &rootOptions{}, client, target, "hello"); err != nil {
+	if err := runReply(command, &rootOptions{}, client, target, "hello", "prefix"); err != nil {
 		t.Fatalf("runReply returned error: %v", err)
 	}
 	for _, want := range []string{"Reply posted.", "Channel: C12345678", "Timestamp: 1700000001.000002", "Thread: slk thread C12345678 1700000000.000001"} {

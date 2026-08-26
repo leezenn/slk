@@ -24,6 +24,7 @@ const (
 	ErrorCredentialBackend ErrorCode = "credential_backend"
 	ErrorSlackAPI          ErrorCode = "slack_api"
 	ErrorFilesystem        ErrorCode = "filesystem"
+	ErrorConfig            ErrorCode = "config"
 	ErrorInternal          ErrorCode = "internal"
 	ErrorInterrupted       ErrorCode = "interrupted"
 )
@@ -89,6 +90,14 @@ func filesystemError(err error) error {
 		ErrorFilesystem,
 		"The local file operation failed: "+safeDynamic(err.Error(), 256)+".",
 		"Check the destination and its permissions, then retry.",
+	)
+}
+
+func configLoadError(err error) error {
+	return newCommandError(
+		ErrorConfig,
+		"slk could not load its configuration: "+safeDynamic(err.Error(), 256)+".",
+		"Fix the configuration file, then retry.",
 	)
 }
 

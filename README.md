@@ -1,6 +1,6 @@
 # slk
 
-Last updated: 2026-08-25
+Last updated: 2026-08-26
 
 Slack CLI for exploring workspace activity, researching context, and posting explicit thread replies. Follow activity around people, search and read conversations, download files, capture notes, and reply to known message permalinks.
 
@@ -42,6 +42,20 @@ Activity combines messages authored by the person with searchable messages that 
 ## Thread replies
 
 `slk reply <permalink> --text <message>` posts one reply immediately to the permalink's thread. Read the conversation and confirm the exact response before invoking it. Successful output includes Slack's permalink for the new reply; uncertain delivery tells you to inspect the thread before retrying.
+
+Replies prepend a smaller Slack context line before the regular response section. The default, `:mechanical_arm: agent assisted response.`, identifies agent assistance, but the prefix can contain any user-chosen context. The prefix and complete response are also supplied in the same order as Slack's plain-text accessibility and notification fallback.
+
+## Configuration
+
+The optional configuration file is `$XDG_CONFIG_HOME/slk/config.json`, falling back to `~/.config/slk/config.json` when `XDG_CONFIG_HOME` is unset. `slk` does not create the file merely to apply defaults.
+
+```json
+{
+  "reply_prefix": ":mechanical_arm: agent assisted response."
+}
+```
+
+A missing file or omitted `reply_prefix` uses the default. A non-empty string overrides it. An explicit empty string (`""`) deliberately omits the prefix and preserves the existing text-only Slack message.
 
 ## Agent integration
 

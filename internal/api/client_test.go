@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -58,6 +59,7 @@ func TestPostReplyAndGetPermalink(t *testing.T) {
 		threadTs  = "1700000000.000001"
 		replyTs   = "1700000001.000002"
 		text      = "We found the issue and will ship the fix tomorrow."
+		prefix    = ":mechanical_arm: agent assisted response."
 		permalink = "https://example.slack.com/archives/C12345678/p1700000001000002?thread_ts=1700000000.000001&cid=C12345678"
 	)
 
@@ -75,8 +77,18 @@ func TestPostReplyAndGetPermalink(t *testing.T) {
 			if got := req.Form.Get("thread_ts"); got != threadTs {
 				t.Fatalf("post thread_ts = %q, want %q", got, threadTs)
 			}
-			if got := req.Form.Get("text"); got != text {
-				t.Fatalf("post text = %q, want %q", got, text)
+			if got, want := req.Form.Get("text"), prefix+"\n\n"+text; got != want {
+				t.Fatalf("post fallback text = %q, want %q", got, want)
+			}
+			var blocks []slackBlock
+			if err := json.Unmarshal([]byte(req.Form.Get("blocks")), &blocks); err != nil {
+				t.Fatalf("decoding post blocks: %v", err)
+			}
+			if len(blocks) != 2 || blocks[0].Type != "context" || len(blocks[0].Elements) != 1 || blocks[0].Elements[0].Type != "mrkdwn" || blocks[0].Elements[0].Text != prefix {
+				t.Fatalf("prefix context block = %#v", blocks)
+			}
+			if blocks[1].Type != "section" || blocks[1].Text == nil || blocks[1].Text.Text != text {
+				t.Fatalf("message section block = %#v", blocks[1])
 			}
 			body = `{"ok":true,"channel":"` + channelID + `","ts":"` + replyTs + `"}`
 		case "/api/chat.getPermalink":
@@ -98,7 +110,7 @@ func TestPostReplyAndGetPermalink(t *testing.T) {
 		}, nil
 	})
 
-	posted, err := client.PostReply(channelID, threadTs, text)
+	posted, err := client.PostReply(channelID, threadTs, text, prefix)
 	if err != nil {
 		t.Fatalf("PostReply returned error: %v", err)
 	}
@@ -114,6 +126,48 @@ func TestPostReplyAndGetPermalink(t *testing.T) {
 	}
 }
 
+func TestPostReplyOmitsBlocksWhenPrefixIsEmpty(t *testing.T) {
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := req.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Form.Get("text"); got != "hello" {
+			t.Fatalf("post text = %q, want hello", got)
+		}
+		if _, present := req.Form["blocks"]; present {
+			t.Fatalf("post unexpectedly included blocks: %q", req.Form.Get("blocks"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"channel":"C12345678","ts":"1700000001.000002"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	if _, err := client.PostReply("C12345678", "1700000000.000001", "hello", ""); err != nil {
+		t.Fatalf("PostReply returned error: %v", err)
+	}
+}
+
+func TestReplyBlocksSplitLongTextWithoutDataLoss(t *testing.T) {
+	text := strings.Repeat("å", slackSectionTextLimit+1)
+	blocks := replyBlocks(text, "prefix")
+	if len(blocks) != 3 {
+		t.Fatalf("block count = %d, want one context and two sections", len(blocks))
+	}
+	if blocks[0].Type != "context" {
+		t.Fatalf("first block type = %q, want context", blocks[0].Type)
+	}
+	if got := blocks[1].Text.Text + blocks[2].Text.Text; got != text {
+		t.Fatal("split section text did not reconstruct the original Unicode message")
+	}
+	if len([]rune(blocks[1].Text.Text)) > slackSectionTextLimit || len([]rune(blocks[2].Text.Text)) > slackSectionTextLimit {
+		t.Fatal("split section exceeded Slack's text limit")
+	}
+}
+
 func TestPostReplyReturnsTypedSlackRejection(t *testing.T) {
 	client := NewClient("test-token")
 	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -125,7 +179,7 @@ func TestPostReplyReturnsTypedSlackRejection(t *testing.T) {
 		}, nil
 	})
 
-	_, err := client.PostReply("C12345678", "1700000000.000001", "hello")
+	_, err := client.PostReply("C12345678", "1700000000.000001", "hello", "prefix")
 	var methodErr *MethodError
 	if !errors.As(err, &methodErr) || methodErr.Code != "missing_scope" {
 		t.Fatalf("PostReply error = %v, want typed missing_scope", err)

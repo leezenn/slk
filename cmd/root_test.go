@@ -13,6 +13,7 @@ import (
 
 	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/auth"
+	"github.com/leezenn/slk/internal/config"
 )
 
 type fakeCredentialStore struct {
@@ -41,6 +42,9 @@ func (f *fakeCredentialStore) Clear() error {
 func isolatedDependencies(store auth.Store) Dependencies {
 	return Dependencies{
 		Credentials: store,
+		LoadConfig: func() (config.Settings, error) {
+			return config.Settings{ReplyPrefix: config.DefaultReplyPrefix}, nil
+		},
 		NewClient: func(string) *api.Client {
 			panic("Slack client factory must not be called")
 		},
@@ -59,6 +63,10 @@ func forbiddenDependencies(t *testing.T) Dependencies {
 
 	return Dependencies{
 		Credentials: &forbiddenCredentialStore{t: t},
+		LoadConfig: func() (config.Settings, error) {
+			t.Fatal("test reached the config seam")
+			return config.Settings{}, nil
+		},
 		NewClient: func(string) *api.Client {
 			t.Fatal("test reached the live Slack client seam")
 			return nil
@@ -242,6 +250,30 @@ func TestAuthRequiredExplainsRecovery(t *testing.T) {
 	const want = "Slack authentication is not configured.\nRun 'slk auth' to connect Slack, then retry.\n"
 	if code != 1 || stdout != "" || stderr != want {
 		t.Fatalf("result = code %d stdout %q stderr %q, want stderr %q", code, stdout, stderr, want)
+	}
+}
+
+func TestReplyConfigFailureStopsBeforeCredentialAccess(t *testing.T) {
+	store := &fakeCredentialStore{}
+	deps := isolatedDependencies(store)
+	deps.LoadConfig = func() (config.Settings, error) {
+		return config.Settings{}, errors.New("invalid reply_prefix")
+	}
+
+	code, stdout, stderr := runIsolated(
+		t,
+		deps,
+		context.Background(),
+		"reply",
+		"https://workspace.slack.com/archives/C12345678/p1705312325000100",
+		"--text",
+		"hello",
+	)
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "could not load its configuration") || !strings.Contains(stderr, "Fix the configuration file") {
+		t.Fatalf("result = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	if store.getCalls != 0 {
+		t.Fatalf("credential store Get calls = %d, want zero", store.getCalls)
 	}
 }
 

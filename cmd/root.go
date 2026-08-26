@@ -28,7 +28,11 @@ func NewRootCommand(deps Dependencies) *cobra.Command {
 		Long: `Explore Slack activity, channels, DMs, threads, and files, and reply to message threads.
 
 Environment:
-  SLACK_TOKEN  Fallback token if keychain is not configured`,
+  SLACK_TOKEN       Fallback token if keychain is not configured
+  XDG_CONFIG_HOME   Config root; defaults to ~/.config
+
+Configuration:
+  $XDG_CONFIG_HOME/slk/config.json`,
 		Example: `  slk auth xoxp-your-token-here
   slk whoami
   slk activity

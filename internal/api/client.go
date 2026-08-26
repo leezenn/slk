@@ -695,13 +695,37 @@ type PostMessageResult struct {
 	Ts      string `json:"ts"`
 }
 
-// PostReply posts one message into an existing thread.
-func (c *Client) PostReply(channelID, threadTs, text string) (*PostMessageResult, error) {
-	body, err := c.post("chat.postMessage", url.Values{
+const slackSectionTextLimit = 3000
+
+type slackTextObject struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type slackBlock struct {
+	Type     string            `json:"type"`
+	Text     *slackTextObject  `json:"text,omitempty"`
+	Elements []slackTextObject `json:"elements,omitempty"`
+}
+
+// PostReply posts one message into an existing thread. A non-empty prefix is
+// rendered as a smaller context block before the regular message sections.
+func (c *Client) PostReply(channelID, threadTs, text, prefix string) (*PostMessageResult, error) {
+	params := url.Values{
 		"channel":   {channelID},
 		"thread_ts": {threadTs},
 		"text":      {text},
-	})
+	}
+	if prefix != "" {
+		blocks, err := json.Marshal(replyBlocks(text, prefix))
+		if err != nil {
+			return nil, fmt.Errorf("encoding chat.postMessage blocks: %w", err)
+		}
+		params.Set("blocks", string(blocks))
+		params.Set("text", prefix+"\n\n"+text)
+	}
+
+	body, err := c.post("chat.postMessage", params)
 	if err != nil {
 		return nil, err
 	}
@@ -713,6 +737,43 @@ func (c *Client) PostReply(channelID, threadTs, text string) (*PostMessageResult
 		return nil, fmt.Errorf("parsing chat.postMessage: successful response omitted channel or timestamp")
 	}
 	return &result, nil
+}
+
+func replyBlocks(text, prefix string) []slackBlock {
+	sections := splitSlackSectionText(text)
+	blocks := make([]slackBlock, 0, len(sections)+1)
+	blocks = append(blocks, slackBlock{
+		Type: "context",
+		Elements: []slackTextObject{{
+			Type: "mrkdwn",
+			Text: prefix,
+		}},
+	})
+	for _, section := range sections {
+		sectionText := slackTextObject{Type: "mrkdwn", Text: section}
+		blocks = append(blocks, slackBlock{Type: "section", Text: &sectionText})
+	}
+	return blocks
+}
+
+func splitSlackSectionText(text string) []string {
+	runes := []rune(text)
+	sections := make([]string, 0, len(runes)/slackSectionTextLimit+1)
+	for len(runes) > 0 {
+		end := len(runes)
+		if end > slackSectionTextLimit {
+			end = slackSectionTextLimit
+			for index := end - 1; index > 0; index-- {
+				if runes[index] == '\n' {
+					end = index + 1
+					break
+				}
+			}
+		}
+		sections = append(sections, string(runes[:end]))
+		runes = runes[end:]
+	}
+	return sections
 }
 
 // GetPermalink returns Slack's canonical permalink for a message.

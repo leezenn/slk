@@ -23,7 +23,7 @@ type replyTarget struct {
 }
 
 type replyClient interface {
-	PostReply(channelID, threadTs, text string) (*api.PostMessageResult, error)
+	PostReply(channelID, threadTs, text, prefix string) (*api.PostMessageResult, error)
 	GetPermalink(channelID, messageTs string) (string, error)
 }
 
@@ -35,7 +35,9 @@ func newReplyCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command
 		Long: `Post one reply to the thread identified by a Slack message permalink.
 
 The command posts immediately. Read the conversation first and provide the exact
-reply text with --text. Slack must grant the current user token chat:write.`,
+reply text with --text. Replies include the configured reply prefix as a small
+context line unless reply_prefix is explicitly empty. Slack must
+grant the current user token chat:write.`,
 		Example: `  slk reply 'https://workspace.slack.com/archives/C12345/p1705312325000100' --text 'We found the issue and will ship the fix tomorrow.'`,
 		Args:    argumentValidator(cobra.ExactArgs(1)),
 	}
@@ -48,17 +50,24 @@ reply text with --text. Slack must grant the current user token chat:write.`,
 		if err != nil {
 			return invalidArgument(cmd, err.Error())
 		}
+		if err := checkContext(cmd.Context()); err != nil {
+			return err
+		}
+		settings, err := deps.config()
+		if err != nil {
+			return err
+		}
 		client, err := getClient(cmd, deps)
 		if err != nil {
 			return err
 		}
-		return runReply(cmd, rootOptions, client, target, options.text)
+		return runReply(cmd, rootOptions, client, target, options.text, settings.ReplyPrefix)
 	}
 	return command
 }
 
-func runReply(cmd *cobra.Command, rootOptions *rootOptions, client replyClient, target replyTarget, text string) error {
-	posted, err := client.PostReply(target.channelID, target.threadTs, text)
+func runReply(cmd *cobra.Command, rootOptions *rootOptions, client replyClient, target replyTarget, text, prefix string) error {
+	posted, err := client.PostReply(target.channelID, target.threadTs, text, prefix)
 	if err != nil {
 		return replyPostError(err)
 	}
