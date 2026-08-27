@@ -24,8 +24,8 @@ func newWriteCommand(deps Dependencies, rootOptions *rootOptions, prefix string)
 
 The target may be a channel name or ID, an existing DM handle such as @alex,
 a Slack user ID, or a DM channel ID. The command posts immediately. Confirm the
-exact target and text before invoking it. Messages include the configured reply
-prefix as a small context line unless reply_prefix is explicitly empty. Slack
+exact target and text before invoking it. Messages include the configured message
+prefix as a small context line unless message_prefix is explicitly empty. Slack
 must grant the current user token chat:write.`,
 		Example: `  slk write general --text 'The deployment is complete.'
   slk write @alex --text 'Could you review the latest draft?'`,

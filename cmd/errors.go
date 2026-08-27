@@ -102,6 +102,14 @@ func configLoadError(err error) error {
 	)
 }
 
+func configSaveError(err error) error {
+	return newCommandError(
+		ErrorConfig,
+		"slk could not save its configuration: "+safeDynamic(err.Error(), 256)+".",
+		"Check the configuration path and permissions, then retry.",
+	)
+}
+
 func refusedError(message, action string) error {
 	return newCommandError(ErrorRefused, message, action)
 }
@@ -111,6 +119,14 @@ func mutationDeniedError(mutation config.Mutation) error {
 		ErrorRefused,
 		fmt.Sprintf("Command 'slk %s' is disabled by configuration.", mutation),
 		fmt.Sprintf("Remove %q from deny_mutations in the slk config file, then retry.", mutation),
+	)
+}
+
+func toolDisabledError(command string) error {
+	return newCommandError(
+		ErrorRefused,
+		fmt.Sprintf("Command 'slk %s' is unavailable because slk is disabled by local configuration.", command),
+		"Ask the user for permission before running 'slk config enable'.",
 	)
 }
 

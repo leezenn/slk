@@ -42,15 +42,15 @@ func TestAuthAccessSummary(t *testing.T) {
 			scopes: allReadScopes,
 			want: []string{
 				"Access: verified for all current slk read features.",
-				"Writing: thread replies require chat:write.",
+				"Writing: top-level messages and thread replies require chat:write.",
 			},
 		},
 		{
-			name:   "thread replies available",
+			name:   "message writing available",
 			scopes: append(append([]string{}, allReadScopes...), "chat:write"),
 			want: []string{
 				"Access: verified for all current slk read features.",
-				"Writing: thread replies are available.",
+				"Writing: top-level messages and thread replies are available.",
 			},
 		},
 		{
@@ -66,7 +66,7 @@ func TestAuthAccessSummary(t *testing.T) {
 				"Access is limited: workspace discovery and file downloads may not work.",
 				"Missing Slack scopes: search:read, files:read.",
 				"Update the Slack app permissions, reinstall it, then run 'slk auth --interactive'.",
-				"Writing: thread replies require chat:write.",
+				"Writing: top-level messages and thread replies require chat:write.",
 			},
 		},
 		{

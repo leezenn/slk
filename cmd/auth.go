@@ -147,9 +147,9 @@ func authAccessSummary(scopes []string) []string {
 		)
 	}
 	if granted["chat:write"] {
-		summary = append(summary, "Writing: thread replies are available.")
+		summary = append(summary, "Writing: top-level messages and thread replies are available.")
 	} else {
-		summary = append(summary, "Writing: thread replies require chat:write.")
+		summary = append(summary, "Writing: top-level messages and thread replies require chat:write.")
 	}
 	return summary
 }
@@ -168,6 +168,10 @@ func humanList(values []string) string {
 }
 
 func guidedSetup(cmd *cobra.Command, deps Dependencies, store auth.Store, reconnect bool) error {
+	return guidedSetupWithReader(cmd, deps, store, reconnect, newCommandLineReader(cmd))
+}
+
+func guidedSetupWithReader(cmd *cobra.Command, deps Dependencies, store auth.Store, reconnect bool, reader *commandLineReader) error {
 	out := cmd.OutOrStdout()
 	if reconnect {
 		fmt.Fprintln(out, "Let's reconnect Slack with a new token.")
@@ -188,7 +192,7 @@ func guidedSetup(cmd *cobra.Command, deps Dependencies, store auth.Store, reconn
 	fmt.Fprintln(out, "     channels:history, channels:read, groups:history, groups:read,")
 	fmt.Fprintln(out, "     im:history, im:read, mpim:history, mpim:read,")
 	fmt.Fprintln(out, "     reactions:read, search:read, users:read, files:read")
-	fmt.Fprintln(out, "     Optional for thread replies: chat:write")
+	fmt.Fprintln(out, "     Optional for top-level messages and thread replies: chat:write")
 	fmt.Fprintln(out, "  3. Install to Workspace -> Copy User OAuth Token")
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Token will be stored in %s.\n", credStoreName())
@@ -197,38 +201,46 @@ func guidedSetup(cmd *cobra.Command, deps Dependencies, store auth.Store, reconn
 	fmt.Fprintln(out)
 	fmt.Fprint(out, "Paste your xoxp- token: ")
 
-	token, err := readLine(cmd)
+	token, err := reader.ReadLine()
 	if err != nil {
 		return err
 	}
 	return storeToken(cmd, deps, store, token)
 }
 
-func readLine(cmd *cobra.Command) (string, error) {
+type commandLineReader struct {
+	cmd     *cobra.Command
+	scanner *bufio.Scanner
+}
+
+func newCommandLineReader(cmd *cobra.Command) *commandLineReader {
+	return &commandLineReader{cmd: cmd, scanner: bufio.NewScanner(cmd.InOrStdin())}
+}
+
+func (r *commandLineReader) ReadLine() (string, error) {
 	type result struct {
 		line string
 		err  error
 	}
 	completed := make(chan result, 1)
 	go func() {
-		scanner := bufio.NewScanner(cmd.InOrStdin())
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
+		if !r.scanner.Scan() {
+			if err := r.scanner.Err(); err != nil {
 				completed <- result{err: newCommandError(
 					ErrorInternal,
-					"slk could not read the token from the terminal.",
-					"Run 'slk auth' and try again.",
+					"slk could not read from the terminal.",
+					"Run the command and try again.",
 				)}
 				return
 			}
 			completed <- result{err: interruptedError()}
 			return
 		}
-		completed <- result{line: scanner.Text()}
+		completed <- result{line: r.scanner.Text()}
 	}()
 
 	select {
-	case <-cmd.Context().Done():
+	case <-r.cmd.Context().Done():
 		return "", interruptedError()
 	case result := <-completed:
 		if result.err != nil {

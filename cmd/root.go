@@ -36,6 +36,10 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 	}
 	root.PersistentFlags().BoolVar(&options.json, "json", false, "Output as JSON")
 	root.PersistentFlags().BoolVarP(&options.verbose, "verbose", "v", false, "Show progress and detailed output")
+	root.AddCommand(newConfigCommand(deps, options))
+	if settings.Disabled {
+		return root
+	}
 
 	root.AddCommand(
 		newActivityCommand(deps, options),
@@ -53,15 +57,18 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 		newWhoamiCommand(deps, options),
 	)
 	if !settings.MutationDenied(config.MutationReply) {
-		root.AddCommand(newReplyCommand(deps, options, settings.ReplyPrefix))
+		root.AddCommand(newReplyCommand(deps, options, settings.MessagePrefix))
 	}
 	if !settings.MutationDenied(config.MutationWrite) {
-		root.AddCommand(newWriteCommand(deps, options, settings.ReplyPrefix))
+		root.AddCommand(newWriteCommand(deps, options, settings.MessagePrefix))
 	}
 	return root
 }
 
 func rootShort(settings config.Settings) string {
+	if settings.Disabled {
+		return "slk is disabled by local configuration"
+	}
 	hasReply := !settings.MutationDenied(config.MutationReply)
 	hasWrite := !settings.MutationDenied(config.MutationWrite)
 	switch {
@@ -77,6 +84,20 @@ func rootShort(settings config.Settings) string {
 }
 
 func rootLong(settings config.Settings) string {
+	if settings.Disabled {
+		return `slk is disabled by local configuration.
+
+Slack operational commands are hidden and blocked. Stored and environment
+credentials are ignored while disabled.
+
+Agent guidance:
+  Do not enable slk autonomously. Ask the user for permission before running:
+
+    slk config enable
+
+Configuration:
+  $XDG_CONFIG_HOME/slk/config.json (defaults to ~/.config/slk/config.json)`
+	}
 	description := "Explore Slack activity, channels, DMs, threads, and files"
 	hasReply := !settings.MutationDenied(config.MutationReply)
 	hasWrite := !settings.MutationDenied(config.MutationWrite)
@@ -104,6 +125,10 @@ Configuration:
 }
 
 func rootExamples(settings config.Settings) string {
+	if settings.Disabled {
+		return `  slk config
+  slk config enable   # Only after explicit user permission`
+	}
 	examples := []string{
 		"  slk auth xoxp-your-token-here",
 		"  slk whoami",
@@ -142,6 +167,9 @@ func execute(deps Dependencies, ctx context.Context, args []string, in io.Reader
 		return renderError(err, root, args, errOut)
 	}
 	root := configuredRoot(newRootCommand(deps, settings), args, in, out, errOut)
+	if command, blocked := disabledCommandFromArgs(args, settings); blocked {
+		return renderError(toolDisabledError(command), root, args, errOut)
+	}
 	if mutation, denied := deniedMutationFromArgs(args, settings); denied {
 		return renderError(mutationDeniedError(mutation), root, args, errOut)
 	}
@@ -157,6 +185,19 @@ func configuredRoot(root *cobra.Command, args []string, in io.Reader, out, errOu
 	root.SetOut(out)
 	root.SetErr(errOut)
 	return root
+}
+
+func disabledCommandFromArgs(args []string, settings config.Settings) (string, bool) {
+	if !settings.Disabled {
+		return "", false
+	}
+	command := commandNameFromArgs(args)
+	switch command {
+	case "", "config", "help", "completion":
+		return "", false
+	default:
+		return command, true
+	}
 }
 
 func deniedMutationFromArgs(args []string, settings config.Settings) (config.Mutation, bool) {

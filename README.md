@@ -17,11 +17,11 @@ go install github.com/leezenn/slk@latest
 
 ## Setup
 
-**Human:** run `slk auth` and follow the interactive prompts. To replace an existing credential, run `slk auth --interactive`.
+**Human:** run `slk config setup` for a review-first guided journey through authentication and preferences. Existing authentication is kept; use `slk config setup --reconnect` to validate and replace it.
 
-**Agent:** use `slk auth <token>` (non-interactive) or set `SLACK_TOKEN` env var. Do not run bare `slk auth` unattended—it may prompt on stdin when no credential exists.
+**Agent:** use `slk auth <token>` (non-interactive) or set `SLACK_TOKEN` when explicitly instructed. Do not run bare `slk auth`, `slk auth --interactive`, or `slk config setup` unattended because they may prompt on stdin.
 
-When storing a token, `slk` verifies the permissions Slack granted and explains which current read features may be unavailable and how to enable them.
+When storing a token, `slk` verifies the permissions Slack granted and explains which current features may be unavailable and how to enable them. `slk config disconnect` removes the locally stored credential but does not revoke it at Slack or disable environment authentication.
 
 Run `slk whoami` to show the authenticated Slack handle, display name, user ID, and workspace. Human-readable message output marks that user's messages with `(me)`; structured message and search output includes `"is_self": true`.
 
@@ -53,14 +53,33 @@ The optional configuration file is `$XDG_CONFIG_HOME/slk/config.json`, falling b
 
 ```json
 {
-  "reply_prefix": ":mechanical_arm: agent assisted response.",
+  "disabled": false,
+  "message_prefix": ":mechanical_arm: agent assisted response.",
   "deny_mutations": []
 }
 ```
 
-A missing file or omitted `reply_prefix` uses the default. A non-empty string overrides it. An explicit empty string (`""`) deliberately omits the prefix and preserves the existing text-only Slack message.
+A missing file or omitted `message_prefix` uses the default. A non-empty string overrides it. An explicit empty string (`""`) deliberately omits the prefix and preserves text-only Slack messages. The former `reply_prefix` name is not accepted.
 
-`deny_mutations` accepts `"reply"` and `"write"`. An omitted or empty list allows every shipped mutation. Explicitly denied commands disappear from generated `slk --help` descriptions, command lists, and examples. Invoking one directly fails with a configuration-policy error before credentials or Slack are accessed.
+Use the validated command surface instead of editing JSON manually:
+
+```text
+slk config
+slk config path
+slk config set message-prefix '<text>'
+slk config set message-prefix ''
+slk config reset message-prefix
+slk config deny <reply|write>
+slk config allow <reply|write>
+slk config setup [--reconnect]
+slk config disconnect
+slk config disable
+slk config enable
+```
+
+Bare `slk config` is read-only. Mutations validate and atomically persist the file. `deny_mutations` accepts `"reply"` and `"write"`; omitted or empty allows both. Explicitly denied commands disappear from generated help and fail before credentials or Slack are accessed.
+
+When `disabled` is true, all Slack operational commands—including top-level `auth`—are hidden and blocked regardless of stored or environment credentials. Root help reports the disabled state. `config` remains available for recovery, and agents must ask the user for permission before running `slk config enable`. Setup and reconnect never silently enable the tool.
 
 ## Agent integration
 
@@ -78,7 +97,8 @@ slk - Explore Slack activity, research workspace context, and post explicit mess
       Follow rendered `slk open '<permalink>'` commands to inspect a search hit in context.
       `slk read` for chronological context (recent conversation flow).
       Follow rendered `slk download F...` commands to fetch attachments safely.
-      Treat the current `slk --help` as authoritative because config-denied mutations are omitted.
+      Treat the current `slk --help` as authoritative because denied or globally disabled commands are omitted.
+      If help says slk is disabled, ask the user for permission before running `slk config enable`.
       `slk write '<channel-or-user>' --text '<message>'` posts a top-level message immediately; confirm the exact target and text first.
       `slk reply '<permalink>' --text '<message>'` posts immediately; confirm the exact reply first.
 ```

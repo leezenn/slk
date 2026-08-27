@@ -16,12 +16,58 @@ import (
 	"github.com/leezenn/slk/internal/config"
 )
 
+type fakeConfigStore struct {
+	document  config.Document
+	loadErr   error
+	saveErr   error
+	pathErr   error
+	path      string
+	loadCalls int
+	saveCalls int
+}
+
+func (f *fakeConfigStore) Path() (string, error) {
+	if f.pathErr != nil {
+		return "", f.pathErr
+	}
+	if f.path == "" {
+		return "/test/config.json", nil
+	}
+	return f.path, nil
+}
+
+func (f *fakeConfigStore) Load() (config.Settings, error) {
+	f.loadCalls++
+	if f.loadErr != nil {
+		return config.Settings{}, f.loadErr
+	}
+	return f.document.Effective(), nil
+}
+
+func (f *fakeConfigStore) LoadDocument() (config.Document, error) {
+	f.loadCalls++
+	if f.loadErr != nil {
+		return config.Document{}, f.loadErr
+	}
+	return f.document, nil
+}
+
+func (f *fakeConfigStore) Save(document config.Document) error {
+	f.saveCalls++
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.document = document
+	return nil
+}
+
 type fakeCredentialStore struct {
-	getResult  auth.Result
-	getErr     error
-	getCalls   int
-	setCalls   int
-	clearCalls int
+	getResult    auth.Result
+	getErr       error
+	getCalls     int
+	setCalls     int
+	clearCalls   int
+	persistClear bool
 }
 
 func (f *fakeCredentialStore) Get() (auth.Result, error) {
@@ -29,22 +75,26 @@ func (f *fakeCredentialStore) Get() (auth.Result, error) {
 	return f.getResult, f.getErr
 }
 
-func (f *fakeCredentialStore) Set(string) error {
+func (f *fakeCredentialStore) Set(token string) error {
 	f.setCalls++
+	f.getResult = auth.Result{Token: token, Source: auth.SourceKeychain}
+	f.getErr = nil
 	return nil
 }
 
 func (f *fakeCredentialStore) Clear() error {
 	f.clearCalls++
+	if f.persistClear {
+		f.getResult = auth.Result{Source: auth.SourceNone}
+		f.getErr = errors.New("missing")
+	}
 	return nil
 }
 
 func isolatedDependencies(store auth.Store) Dependencies {
 	return Dependencies{
-		Credentials: store,
-		LoadConfig: func() (config.Settings, error) {
-			return config.Defaults(), nil
-		},
+		Credentials:   store,
+		Configuration: &fakeConfigStore{},
 		NewClient: func(string) *api.Client {
 			panic("Slack client factory must not be called")
 		},
@@ -62,10 +112,8 @@ func forbiddenDependencies(t *testing.T) Dependencies {
 	t.Setenv("SLACK_TOKEN", "")
 
 	return Dependencies{
-		Credentials: &forbiddenCredentialStore{t: t},
-		LoadConfig: func() (config.Settings, error) {
-			return config.Defaults(), nil
-		},
+		Credentials:   &forbiddenCredentialStore{t: t},
+		Configuration: &fakeConfigStore{},
 		NewClient: func(string) *api.Client {
 			t.Fatal("test reached the live Slack client seam")
 			return nil
@@ -75,6 +123,28 @@ func forbiddenDependencies(t *testing.T) Dependencies {
 			return time.Time{}
 		},
 	}
+}
+
+type forbiddenConfigStore struct{ t *testing.T }
+
+func (f *forbiddenConfigStore) Path() (string, error) {
+	f.t.Fatal("test reached the config path seam")
+	return "", nil
+}
+
+func (f *forbiddenConfigStore) Load() (config.Settings, error) {
+	f.t.Fatal("test reached the config load seam")
+	return config.Settings{}, nil
+}
+
+func (f *forbiddenConfigStore) LoadDocument() (config.Document, error) {
+	f.t.Fatal("test reached the config document seam")
+	return config.Document{}, nil
+}
+
+func (f *forbiddenConfigStore) Save(config.Document) error {
+	f.t.Fatal("test reached the config save seam")
+	return nil
 }
 
 type forbiddenCredentialStore struct{ t *testing.T }
@@ -102,7 +172,7 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 }
 
 var commandNames = []string{
-	"activity", "auth", "channels", "download", "members", "notes", "open",
+	"activity", "auth", "channels", "config", "download", "members", "notes", "open",
 	"read", "recent", "reply", "search", "thread", "users", "whoami", "write",
 }
 
@@ -273,11 +343,7 @@ func TestDeniedMutationsShapeHelpAndRefuseInvocation(t *testing.T) {
 		t.Run(string(test.mutation), func(t *testing.T) {
 			store := &fakeCredentialStore{}
 			deps := isolatedDependencies(store)
-			deps.LoadConfig = func() (config.Settings, error) {
-				settings := config.Defaults()
-				settings.DeniedMutations = []config.Mutation{test.mutation}
-				return settings, nil
-			}
+			deps.Configuration = &fakeConfigStore{document: config.Document{DeniedMutations: []config.Mutation{test.mutation}}}
 
 			code, stdout, stderr := runIsolated(t, deps, context.Background(), "--help")
 			if code != 0 || stderr != "" {
@@ -320,9 +386,7 @@ func TestAuthRequiredExplainsRecovery(t *testing.T) {
 func TestReplyConfigFailureStopsBeforeCredentialAccess(t *testing.T) {
 	store := &fakeCredentialStore{}
 	deps := isolatedDependencies(store)
-	deps.LoadConfig = func() (config.Settings, error) {
-		return config.Settings{}, errors.New("invalid reply_prefix")
-	}
+	deps.Configuration = &fakeConfigStore{loadErr: errors.New("invalid message_prefix")}
 
 	code, stdout, stderr := runIsolated(
 		t,
@@ -356,10 +420,7 @@ func TestCanceledContextStopsEveryCommandBeforeDependencies(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			deps := forbiddenDependencies(t)
-			deps.LoadConfig = func() (config.Settings, error) {
-				t.Fatal("test reached the config seam before cancellation")
-				return config.Settings{}, nil
-			}
+			deps.Configuration = &forbiddenConfigStore{t: t}
 			code, stdout, stderr := runIsolated(t, deps, ctx, args...)
 			if code != 130 || stdout != "" || stderr != "Operation interrupted.\n" {
 				t.Fatalf("result = code %d stdout %q stderr %q", code, stdout, stderr)

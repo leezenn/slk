@@ -10,19 +10,19 @@ import (
 
 // Dependencies contains the process-boundary seams commands need for isolation.
 type Dependencies struct {
-	Credentials auth.Store
-	LoadConfig  func() (config.Settings, error)
-	NewClient   func(token string) *api.Client
-	Now         func() time.Time
+	Credentials   auth.Store
+	Configuration config.Store
+	NewClient     func(token string) *api.Client
+	Now           func() time.Time
 }
 
 // DefaultDependencies returns the concrete local process dependencies.
 func DefaultDependencies() Dependencies {
 	return Dependencies{
-		Credentials: auth.NewStore(),
-		LoadConfig:  config.Load,
-		NewClient:   api.NewClient,
-		Now:         time.Now,
+		Credentials:   auth.NewStore(),
+		Configuration: config.NewStore(),
+		NewClient:     api.NewClient,
+		Now:           time.Now,
 	}
 }
 
@@ -33,11 +33,19 @@ func (d Dependencies) credentialStore() (auth.Store, error) {
 	return d.Credentials, nil
 }
 
-func (d Dependencies) config() (config.Settings, error) {
-	if d.LoadConfig == nil {
-		return config.Settings{}, internalError()
+func (d Dependencies) configStore() (config.Store, error) {
+	if d.Configuration == nil {
+		return nil, internalError()
 	}
-	settings, err := d.LoadConfig()
+	return d.Configuration, nil
+}
+
+func (d Dependencies) config() (config.Settings, error) {
+	store, err := d.configStore()
+	if err != nil {
+		return config.Settings{}, err
+	}
+	settings, err := store.Load()
 	if err != nil {
 		return config.Settings{}, configLoadError(err)
 	}
