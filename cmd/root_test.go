@@ -172,7 +172,7 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 }
 
 var commandNames = []string{
-	"activity", "auth", "channels", "config", "delete", "download", "members", "notes", "open",
+	"activity", "auth", "channels", "config", "delete", "download", "edit", "members", "notes", "open",
 	"read", "recent", "replace", "reply", "search", "thread", "users", "whoami", "write",
 }
 
@@ -259,14 +259,13 @@ func TestEveryCommandHelpIsIsolated(t *testing.T) {
 	}
 }
 
-func TestRootReservesEditAndExposesReplace(t *testing.T) {
+func TestRootDistinguishesEditFromReplace(t *testing.T) {
 	code, stdout, stderr := runIsolated(t, forbiddenDependencies(t), context.Background(), "--help")
-	if code != 0 || stderr != "" || !strings.Contains(stdout, "\n  replace ") || strings.Contains(stdout, "\n  edit ") {
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "\n  edit ") || !strings.Contains(stdout, "\n  replace ") {
 		t.Fatalf("root help = code %d stdout %q stderr %q", code, stdout, stderr)
 	}
-	code, stdout, stderr = runIsolated(t, forbiddenDependencies(t), context.Background(), "edit", "anything")
-	if code != 1 || stdout != "" || !strings.Contains(stderr, "unknown command") {
-		t.Fatalf("reserved edit = code %d stdout %q stderr %q", code, stdout, stderr)
+	if !strings.Contains(stdout, "slk edit '<slack-permalink>' --match") || !strings.Contains(stdout, "slk replace '<slack-permalink>' --text") {
+		t.Fatalf("root examples do not distinguish edit/replace: %q", stdout)
 	}
 }
 
@@ -286,6 +285,10 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		{name: "delete shape", args: []string{"delete"}},
 		{name: "delete permalink", args: []string{"delete", "not-a-permalink", "--yes"}},
 		{name: "download shape", args: []string{"download"}},
+		{name: "edit shape", args: []string{"edit"}},
+		{name: "edit match", args: []string{"edit", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--with", "replacement"}},
+		{name: "edit replacement", args: []string{"edit", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--match", "current"}},
+		{name: "edit permalink", args: []string{"edit", "not-a-permalink", "--match", "current", "--with", "replacement"}},
 		{name: "members shape", args: []string{"members"}},
 		{name: "notes shape", args: []string{"notes", "extra"}},
 		{name: "open shape", args: []string{"open"}},
@@ -345,6 +348,18 @@ func TestDeniedMutationsShapeHelpAndRefuseInvocation(t *testing.T) {
 				"delete",
 				"https://workspace.slack.com/archives/C12345678/p1705312325000100",
 				"--yes",
+			},
+		},
+		{
+			mutation: config.MutationEdit,
+			other:    config.MutationWrite,
+			args: []string{
+				"edit",
+				"https://workspace.slack.com/archives/C12345678/p1705312325000100",
+				"--match",
+				"current",
+				"--with",
+				"replacement",
 			},
 		},
 		{

@@ -147,9 +147,9 @@ func authAccessSummary(scopes []string) []string {
 		)
 	}
 	if granted["chat:write"] {
-		summary = append(summary, "Message mutations: write, reply, replace, and delete are available.")
+		summary = append(summary, "Message mutations: write, reply, edit, replace, and delete are available.")
 	} else {
-		summary = append(summary, "Message mutations: write, reply, replace, and delete require chat:write.")
+		summary = append(summary, "Message mutations: write, reply, edit, replace, and delete require chat:write.")
 	}
 	return summary
 }
@@ -192,7 +192,7 @@ func guidedSetupWithReader(cmd *cobra.Command, deps Dependencies, store auth.Sto
 	fmt.Fprintln(out, "     channels:history, channels:read, groups:history, groups:read,")
 	fmt.Fprintln(out, "     im:history, im:read, mpim:history, mpim:read,")
 	fmt.Fprintln(out, "     reactions:read, search:read, users:read, files:read")
-	fmt.Fprintln(out, "     Optional for write, reply, replace, and delete: chat:write")
+	fmt.Fprintln(out, "     Optional for write, reply, edit, replace, and delete: chat:write")
 	fmt.Fprintln(out, "  3. Install to Workspace -> Copy User OAuth Token")
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Token will be stored in %s.\n", credStoreName())

@@ -98,6 +98,10 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 	if err != nil {
 		return err
 	}
+	allowEdit, err := promptYesNo(cmd, reader, "Allow exact-fragment message editing?", !settings.MutationDenied(config.MutationEdit))
+	if err != nil {
+		return err
+	}
 	allowReplace, err := promptYesNo(cmd, reader, "Allow complete message replacement?", !settings.MutationDenied(config.MutationReplace))
 	if err != nil {
 		return err
@@ -108,6 +112,7 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 	}
 	setMutationDenied(&document, config.MutationReply, !allowReply)
 	setMutationDenied(&document, config.MutationWrite, !allowWrite)
+	setMutationDenied(&document, config.MutationEdit, !allowEdit)
 	setMutationDenied(&document, config.MutationReplace, !allowReplace)
 	setMutationDenied(&document, config.MutationDelete, !allowDelete)
 	if err := saveConfigDocument(store, document); err != nil {

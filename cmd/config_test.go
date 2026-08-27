@@ -158,7 +158,7 @@ func TestConfigDisableCollapsesHelpAndBlocksOperationalCommands(t *testing.T) {
 			t.Fatalf("disabled help omitted %q: %q", want, stdout)
 		}
 	}
-	for _, hidden := range []string{"\n  auth ", "\n  delete ", "\n  read ", "\n  replace ", "\n  reply ", "\n  write "} {
+	for _, hidden := range []string{"\n  auth ", "\n  delete ", "\n  edit ", "\n  read ", "\n  replace ", "\n  reply ", "\n  write "} {
 		if strings.Contains(stdout, hidden) {
 			t.Fatalf("disabled help exposed %q: %q", hidden, stdout)
 		}
@@ -248,7 +248,7 @@ func TestConfigSetupChangesPreferencesThroughOneInputReader(t *testing.T) {
 	deps := isolatedDependencies(credentials)
 	deps.Configuration = configuration
 
-	input := "y\ny\nCustom context\nn\n\n\nn\n"
+	input := "y\ny\nCustom context\nn\n\n\n\nn\n"
 	code, stdout, stderr := runIsolatedWithInput(t, deps, input, "config", "setup")
 	if code != 0 || stderr != "" {
 		t.Fatalf("setup = code %d stdout %q stderr %q", code, stdout, stderr)
@@ -259,6 +259,7 @@ func TestConfigSetupChangesPreferencesThroughOneInputReader(t *testing.T) {
 	settings := configuration.document.Effective()
 	if !settings.MutationDenied(config.MutationReply) ||
 		settings.MutationDenied(config.MutationWrite) ||
+		settings.MutationDenied(config.MutationEdit) ||
 		settings.MutationDenied(config.MutationReplace) ||
 		!settings.MutationDenied(config.MutationDelete) {
 		t.Fatalf("setup denied mutations = %v", settings.DeniedMutations)

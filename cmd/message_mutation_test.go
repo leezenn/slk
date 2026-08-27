@@ -260,8 +260,10 @@ func TestMessageMutationErrorsGuideSafeRecovery(t *testing.T) {
 		wantMessage string
 		wantAction  string
 	}{
+		{name: "edit uncertain", kind: mutationKindEdit, err: errors.New("connection closed"), wantCode: ErrorSlackAPI, wantMessage: "message was edited", wantAction: "before retrying"},
 		{name: "replace uncertain", kind: mutationKindReplace, err: errors.New("connection closed"), wantCode: ErrorSlackAPI, wantMessage: "did not confirm whether", wantAction: "before retrying"},
 		{name: "delete uncertain", kind: mutationKindDelete, err: &api.MethodError{Code: "internal_error"}, wantCode: ErrorSlackAPI, wantMessage: "did not confirm whether", wantAction: "before retrying"},
+		{name: "edit ownership", kind: mutationKindEdit, err: &api.MethodError{Code: "cant_update_message"}, wantCode: ErrorRefused, wantMessage: "does not allow", wantAction: "authored"},
 		{name: "replace ownership", kind: mutationKindReplace, err: &api.MethodError{Code: "cant_update_message"}, wantCode: ErrorRefused, wantMessage: "does not allow", wantAction: "authored"},
 		{name: "delete ownership", kind: mutationKindDelete, err: &api.MethodError{Code: "cant_delete_message"}, wantCode: ErrorRefused, wantMessage: "does not allow", wantAction: "authored"},
 		{name: "edit window", kind: mutationKindReplace, err: &api.MethodError{Code: "edit_window_closed"}, wantCode: ErrorRefused, wantMessage: "window has closed", wantAction: "correction"},

@@ -24,6 +24,7 @@ type Mutation string
 
 const (
 	MutationDelete  Mutation = "delete"
+	MutationEdit    Mutation = "edit"
 	MutationReplace Mutation = "replace"
 	MutationReply   Mutation = "reply"
 	MutationWrite   Mutation = "write"
@@ -31,6 +32,7 @@ const (
 
 var knownMutations = map[Mutation]struct{}{
 	MutationDelete:  {},
+	MutationEdit:    {},
 	MutationReplace: {},
 	MutationReply:   {},
 	MutationWrite:   {},

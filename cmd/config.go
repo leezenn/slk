@@ -128,7 +128,7 @@ func newMutationPolicyCommand(deps Dependencies, rootOptions *rootOptions, deny 
 		short = "Deny one Slack mutation command"
 	}
 	return &cobra.Command{
-		Use:   verb + " <delete|replace|reply|write>",
+		Use:   verb + " <delete|edit|replace|reply|write>",
 		Short: short,
 		Args:  argumentValidator(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {

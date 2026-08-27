@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-27
 
-Slack CLI for exploring workspace activity, researching context, and managing explicit messages. Follow activity around people, search and read conversations, download files, capture notes, write and reply, replace complete message bodies, and permanently delete exact messages.
+Slack CLI for exploring workspace activity, researching context, and managing explicit messages. Follow activity around people, search and read conversations, download files, capture notes, write and reply, edit exact fragments, replace complete message bodies, and permanently delete exact messages.
 
 All commands output plain text by default, `--json` for structured output. Run `slk --help` and `slk <command> --help` for full usage.
 
@@ -45,11 +45,13 @@ Activity combines messages authored by the person with searchable messages that 
 
 `slk reply <permalink> --text <message>` posts one reply immediately to the permalink's thread. Read the conversation and confirm the exact response before invoking it.
 
+`slk edit <permalink> --match <exact-fragment> --with <replacement>` changes one exact fragment in the semantic body of a self-authored message. The match must occur exactly once: zero matches fail as stale and multiple matches fail as ambiguous. `--with ''` explicitly removes the fragment. Existing slk prefixes and attachments are preserved; unsupported custom block layouts are refused. The command never prompts and fresh-reads the result before reporting success.
+
 `slk replace <permalink> --text <message>` replaces the complete body of that exact top-level message or reply. It is not a patch or search-and-replace operation. The message must be authored by the authenticated user. Confirm the exact permalink and complete replacement before invoking it.
 
 `slk delete <permalink> --yes` permanently deletes that exact message. It refuses other authors' messages even when Slack grants broader admin deletion rights. Deleting a thread parent preserves its replies. The command is strictly non-interactive: without `--yes` it fails immediately and never prompts or reads stdin.
 
-Write, reply, and replace apply the configured message prefix. The default, `:mechanical_arm: agent assisted response.`, appears as a smaller Slack context line before the regular message and as part of the plain-text fallback. Successful write/reply operations return Slack's canonical permalink; replace returns the target permalink and delete returns the deleted target without a misleading open command. Uncertain mutation outcomes instruct callers to inspect the exact target before retrying.
+Write, reply, and replace apply the configured message prefix; edit preserves the message's existing prefix. The default, `:mechanical_arm: agent assisted response.`, appears as a smaller Slack context line before the regular message and as part of the plain-text fallback. Successful write/reply operations return Slack's canonical permalink; replace returns the target permalink and delete returns the deleted target without a misleading open command. Uncertain mutation outcomes instruct callers to inspect the exact target before retrying.
 
 ## Configuration
 
@@ -73,15 +75,15 @@ slk config path
 slk config set message-prefix '<text>'
 slk config set message-prefix ''
 slk config reset message-prefix
-slk config deny <delete|replace|reply|write>
-slk config allow <delete|replace|reply|write>
+slk config deny <delete|edit|replace|reply|write>
+slk config allow <delete|edit|replace|reply|write>
 slk config setup [--reconnect]
 slk config disconnect
 slk config disable
 slk config enable
 ```
 
-Bare `slk config` is read-only. Mutations validate and atomically persist the file. `deny_mutations` accepts `"delete"`, `"replace"`, `"reply"`, and `"write"`; omitted or empty allows all four. Explicitly denied commands disappear from generated help and fail before credentials or Slack are accessed.
+Bare `slk config` is read-only. Mutations validate and atomically persist the file. `deny_mutations` accepts `"delete"`, `"edit"`, `"replace"`, `"reply"`, and `"write"`; omitted or empty allows all five. Explicitly denied commands disappear from generated help and fail before credentials or Slack are accessed.
 
 When `disabled` is true, all Slack operational commands—including top-level `auth`—are hidden and blocked regardless of stored or environment credentials. Root help reports the disabled state. `config` remains available for recovery, and agents must ask the user for permission before running `slk config enable`. Setup and reconnect never silently enable the tool.
 
@@ -105,6 +107,7 @@ slk - Explore Slack activity, research workspace context, and post explicit mess
       If help says slk is disabled, ask the user for permission before running `slk config enable`.
       `slk write '<channel-or-user>' --text '<message>'` posts a top-level message immediately; confirm the exact target and text first.
       `slk reply '<permalink>' --text '<message>'` posts immediately; confirm the exact reply first.
+      `slk edit '<permalink>' --match '<exact-fragment>' --with '<replacement>'` edits one unique fragment without prompting; confirm the exact target, match, and replacement first.
       `slk replace '<permalink>' --text '<complete-message>'` replaces the whole body immediately; confirm the exact target and complete replacement first.
       `slk delete '<permalink>' --yes` permanently deletes one self-authored message without prompting; obtain explicit user approval first.
 ```
@@ -115,7 +118,7 @@ The Slack app needs these User Token Scopes for reading:
 
 `channels:history` `channels:read` `groups:history` `groups:read` `im:history` `im:read` `mpim:history` `mpim:read` `reactions:read` `search:read` `users:read` `files:read`
 
-Message writes, replies, replacements, and deletions additionally require `chat:write`.
+Message writes, replies, edits, replacements, and deletions additionally require `chat:write`.
 
 ## License
 

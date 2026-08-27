@@ -59,6 +59,9 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 	if !settings.MutationDenied(config.MutationDelete) {
 		root.AddCommand(newDeleteCommand(deps, options))
 	}
+	if !settings.MutationDenied(config.MutationEdit) {
+		root.AddCommand(newEditCommand(deps, options))
+	}
 	if !settings.MutationDenied(config.MutationReplace) {
 		root.AddCommand(newReplaceCommand(deps, options, settings.MessagePrefix))
 	}
@@ -76,7 +79,7 @@ func rootShort(settings config.Settings) string {
 		return "slk is disabled by local configuration"
 	}
 	canPost := mutationAllowed(settings, config.MutationReply, config.MutationWrite)
-	canModify := mutationAllowed(settings, config.MutationDelete, config.MutationReplace)
+	canModify := mutationAllowed(settings, config.MutationDelete, config.MutationEdit, config.MutationReplace)
 	switch {
 	case canPost && canModify:
 		return "Explore Slack context and manage messages"
@@ -105,12 +108,15 @@ Configuration:
   $XDG_CONFIG_HOME/slk/config.json (defaults to ~/.config/slk/config.json)`
 	}
 	description := "Explore Slack activity, channels, DMs, threads, and files"
-	capabilities := make([]string, 0, 4)
+	capabilities := make([]string, 0, 5)
 	if !settings.MutationDenied(config.MutationWrite) {
 		capabilities = append(capabilities, "write top-level messages")
 	}
 	if !settings.MutationDenied(config.MutationReply) {
 		capabilities = append(capabilities, "reply to threads")
+	}
+	if !settings.MutationDenied(config.MutationEdit) {
+		capabilities = append(capabilities, "edit exact message fragments")
 	}
 	if !settings.MutationDenied(config.MutationReplace) {
 		capabilities = append(capabilities, "replace your messages")
@@ -154,6 +160,9 @@ func rootExamples(settings config.Settings) string {
 	}
 	if !settings.MutationDenied(config.MutationReply) {
 		examples = append(examples, "  slk reply '<slack-permalink>' --text 'We will ship the fix tomorrow.'")
+	}
+	if !settings.MutationDenied(config.MutationEdit) {
+		examples = append(examples, "  slk edit '<slack-permalink>' --match 'tomorow' --with 'tomorrow'")
 	}
 	if !settings.MutationDenied(config.MutationReplace) {
 		examples = append(examples, "  slk replace '<slack-permalink>' --text 'The corrected complete message.'")

@@ -11,8 +11,9 @@ import (
 type messageMutationKind string
 
 const (
-	mutationKindReplace messageMutationKind = "replace"
 	mutationKindDelete  messageMutationKind = "delete"
+	mutationKindEdit    messageMutationKind = "edit"
+	mutationKindReplace messageMutationKind = "replace"
 )
 
 type messageMutationTarget struct {
@@ -52,8 +53,22 @@ func ownedMessageForMutation(client messageOwnershipClient, target messageMutati
 	if err != nil {
 		return nil, slackAPIError(err)
 	}
+	message, err := messageForMutation(client, target, kind)
+	if err != nil {
+		return nil, err
+	}
+	if message.User == "" || message.User != selfID {
+		return nil, refusedError(
+			"slk refuses to "+string(kind)+" a message not authored by the authenticated user.",
+			"Target a message authored by the current Slack user.",
+		)
+	}
+	return message, nil
+}
 
+func messageForMutation(client messageOwnershipClient, target messageMutationTarget, kind messageMutationKind) (*api.Message, error) {
 	var message *api.Message
+	var err error
 	if target.threadTs != "" && target.messageTs != target.threadTs {
 		message, err = client.GetReply(target.channelID, target.threadTs, target.messageTs)
 	} else {
@@ -64,12 +79,6 @@ func ownedMessageForMutation(client messageOwnershipClient, target messageMutati
 			ErrorSlackAPI,
 			"slk could not verify the target message before attempting to "+string(kind)+" it.",
 			"Open the permalink and verify the message still exists and is visible, then retry.",
-		)
-	}
-	if message.User == "" || message.User != selfID {
-		return nil, refusedError(
-			"slk refuses to "+string(kind)+" a message not authored by the authenticated user.",
-			"Target a message authored by the current Slack user.",
 		)
 	}
 	return message, nil
@@ -99,9 +108,9 @@ func messageMutationError(err error, kind messageMutationKind) error {
 			"Run 'slk auth --interactive' to reconnect, then retry.",
 		)
 	case "cant_update_message":
-		if kind == mutationKindReplace {
+		if kind == mutationKindReplace || kind == mutationKindEdit {
 			return refusedError(
-				"Slack does not allow the authenticated user to replace this message.",
+				"Slack does not allow the authenticated user to modify this message.",
 				"Verify the message was authored by the current user and remains editable.",
 			)
 		}
@@ -113,7 +122,7 @@ func messageMutationError(err error, kind messageMutationKind) error {
 			)
 		}
 	case "edit_window_closed":
-		if kind == mutationKindReplace {
+		if kind == mutationKindReplace || kind == mutationKindEdit {
 			return refusedError(
 				"The workspace message-edit window has closed for this message.",
 				"Keep the existing message or post a new correction.",
@@ -135,8 +144,12 @@ func messageMutationError(err error, kind messageMutationKind) error {
 }
 
 func mutationPastTense(kind messageMutationKind) string {
-	if kind == mutationKindReplace {
+	switch kind {
+	case mutationKindEdit:
+		return "edited"
+	case mutationKindReplace:
 		return "replaced"
+	default:
+		return "deleted"
 	}
-	return "deleted"
 }

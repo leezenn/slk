@@ -182,18 +182,19 @@ type Purpose struct {
 
 // Message represents a Slack message.
 type Message struct {
-	Type        string     `json:"type"`
-	Subtype     string     `json:"subtype,omitempty"`
-	User        string     `json:"user,omitempty"`
-	BotID       string     `json:"bot_id,omitempty"`
-	Text        string     `json:"text"`
-	Ts          string     `json:"ts"`
-	ThreadTs    string     `json:"thread_ts,omitempty"`
-	ReplyCount  int        `json:"reply_count,omitempty"`
-	LatestReply string     `json:"latest_reply,omitempty"`
-	Reactions   []Reaction `json:"reactions,omitempty"`
-	Files       []File     `json:"files,omitempty"`
-	Username    string     `json:"username,omitempty"` // bot username
+	Type        string            `json:"type"`
+	Subtype     string            `json:"subtype,omitempty"`
+	User        string            `json:"user,omitempty"`
+	BotID       string            `json:"bot_id,omitempty"`
+	Text        string            `json:"text"`
+	Ts          string            `json:"ts"`
+	ThreadTs    string            `json:"thread_ts,omitempty"`
+	ReplyCount  int               `json:"reply_count,omitempty"`
+	LatestReply string            `json:"latest_reply,omitempty"`
+	Reactions   []Reaction        `json:"reactions,omitempty"`
+	Files       []File            `json:"files,omitempty"`
+	Blocks      []json.RawMessage `json:"blocks,omitempty"`
+	Username    string            `json:"username,omitempty"` // bot username
 }
 
 // Reaction on a message.
