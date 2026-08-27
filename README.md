@@ -1,6 +1,6 @@
 # slk
 
-Last updated: 2026-08-26
+Last updated: 2026-08-27
 
 Slack CLI for exploring workspace activity, researching context, and posting explicit messages. Follow activity around people, search and read conversations, download files, capture notes, write top-level messages, and reply to known message permalinks.
 
