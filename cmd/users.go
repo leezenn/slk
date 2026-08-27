@@ -13,6 +13,15 @@ type usersOptions struct {
 	status bool
 }
 
+type userJSON struct {
+	UserID      string `json:"user_id"`
+	Handle      string `json:"handle"`
+	DisplayName string `json:"display_name"`
+	Deleted     bool   `json:"deleted"`
+	IsBot       bool   `json:"is_bot"`
+	Presence    string `json:"presence,omitempty"`
+}
+
 func newUsersCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
 	options := &usersOptions{}
 	command := &cobra.Command{
@@ -63,15 +72,41 @@ Optionally filter by name or display name with a search query.`,
 			}
 		}
 		if rootOptions.json {
-			out, err := format.FormatJSON(map[string]interface{}{"ok": true, "users": users})
-			if err != nil {
-				return internalError()
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), out)
-			return nil
+			return writeJSON(cmd, map[string]interface{}{"ok": true, "users": usersToJSON(users)})
 		}
 		fmt.Fprint(cmd.OutOrStdout(), format.FormatUsers(users))
 		return nil
 	}
 	return command
+}
+
+func usersToJSON(users []api.User) []userJSON {
+	projected := make([]userJSON, 0, len(users))
+	for _, user := range users {
+		handle := strings.TrimPrefix(strings.TrimSpace(user.Name), "@")
+		displayName := firstNonEmpty(
+			user.Profile.DisplayName,
+			user.Profile.RealName,
+			user.RealName,
+			handle,
+		)
+		projected = append(projected, userJSON{
+			UserID:      user.ID,
+			Handle:      handle,
+			DisplayName: displayName,
+			Deleted:     user.Deleted,
+			IsBot:       user.IsBot,
+			Presence:    user.Presence,
+		})
+	}
+	return projected
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

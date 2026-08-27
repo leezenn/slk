@@ -584,10 +584,39 @@ func (c *Client) GetMessage(channelID, ts string) (*Message, error) {
 		return nil, err
 	}
 
-	if len(resp.Messages) == 0 {
+	if len(resp.Messages) == 0 || resp.Messages[0].Ts != ts {
 		return nil, fmt.Errorf("message not found: ts=%s in channel %s", ts, channelID)
 	}
 
+	return &resp.Messages[0], nil
+}
+
+// GetReply fetches one exact message from a known thread.
+func (c *Client) GetReply(channelID, threadTs, messageTs string) (*Message, error) {
+	params := url.Values{
+		"channel":   {channelID},
+		"ts":        {threadTs},
+		"oldest":    {messageTs},
+		"latest":    {messageTs},
+		"inclusive": {"true"},
+		"limit":     {"1"},
+	}
+
+	body, err := c.post("conversations.replies", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		SlackResponse
+		Messages []Message `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+	if len(resp.Messages) == 0 || resp.Messages[0].Ts != messageTs {
+		return nil, fmt.Errorf("message not found: ts=%s in thread %s", messageTs, threadTs)
+	}
 	return &resp.Messages[0], nil
 }
 
@@ -697,11 +726,28 @@ type PostMessageRequest struct {
 	Prefix    string
 }
 
-// PostMessageResult identifies a message Slack accepted.
-type PostMessageResult struct {
+// UpdateMessageRequest replaces one message's complete body.
+type UpdateMessageRequest struct {
+	ChannelID string
+	MessageTs string
+	Text      string
+	Prefix    string
+}
+
+// MessageMutationResult identifies a message Slack changed.
+type MessageMutationResult struct {
 	Channel string `json:"channel"`
 	Ts      string `json:"ts"`
 }
+
+// PostMessageResult identifies a message Slack accepted.
+type PostMessageResult = MessageMutationResult
+
+// UpdateMessageResult identifies a message Slack replaced.
+type UpdateMessageResult = MessageMutationResult
+
+// DeleteMessageResult identifies a message Slack deleted.
+type DeleteMessageResult = MessageMutationResult
 
 const slackSectionTextLimit = 3000
 
@@ -719,20 +765,19 @@ type slackBlock struct {
 // PostMessage posts one message. A non-empty prefix is rendered as a smaller
 // context block before the regular message sections.
 func (c *Client) PostMessage(request PostMessageRequest) (*PostMessageResult, error) {
+	text, blocks, err := encodeMessageContent(request.Text, request.Prefix)
+	if err != nil {
+		return nil, fmt.Errorf("encoding chat.postMessage blocks: %w", err)
+	}
 	params := url.Values{
 		"channel": {request.ChannelID},
-		"text":    {request.Text},
+		"text":    {text},
 	}
 	if request.ThreadTs != "" {
 		params.Set("thread_ts", request.ThreadTs)
 	}
-	if request.Prefix != "" {
-		blocks, err := json.Marshal(messageBlocks(request.Text, request.Prefix))
-		if err != nil {
-			return nil, fmt.Errorf("encoding chat.postMessage blocks: %w", err)
-		}
-		params.Set("blocks", string(blocks))
-		params.Set("text", request.Prefix+"\n\n"+request.Text)
+	if blocks != "" {
+		params.Set("blocks", blocks)
 	}
 
 	body, err := c.post("chat.postMessage", params)
@@ -747,6 +792,70 @@ func (c *Client) PostMessage(request PostMessageRequest) (*PostMessageResult, er
 		return nil, fmt.Errorf("parsing chat.postMessage: successful response omitted channel or timestamp")
 	}
 	return &result, nil
+}
+
+// UpdateMessage replaces one message's complete text and rendered blocks.
+func (c *Client) UpdateMessage(request UpdateMessageRequest) (*UpdateMessageResult, error) {
+	text, blocks, err := encodeMessageContent(request.Text, request.Prefix)
+	if err != nil {
+		return nil, fmt.Errorf("encoding chat.update blocks: %w", err)
+	}
+	if blocks == "" {
+		blocks = "[]"
+	}
+	body, err := c.post("chat.update", url.Values{
+		"channel": {request.ChannelID},
+		"ts":      {request.MessageTs},
+		"text":    {text},
+		"blocks":  {blocks},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var result UpdateMessageResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parsing chat.update: %w", err)
+	}
+	if result.Channel == "" || result.Ts == "" {
+		return nil, fmt.Errorf("parsing chat.update: successful response omitted channel or timestamp")
+	}
+	if result.Channel != request.ChannelID || result.Ts != request.MessageTs {
+		return nil, fmt.Errorf("parsing chat.update: successful response identified a different message")
+	}
+	return &result, nil
+}
+
+// DeleteMessage permanently deletes one exact message.
+func (c *Client) DeleteMessage(channelID, messageTs string) (*DeleteMessageResult, error) {
+	body, err := c.post("chat.delete", url.Values{
+		"channel": {channelID},
+		"ts":      {messageTs},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var result DeleteMessageResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parsing chat.delete: %w", err)
+	}
+	if result.Channel == "" || result.Ts == "" {
+		return nil, fmt.Errorf("parsing chat.delete: successful response omitted channel or timestamp")
+	}
+	if result.Channel != channelID || result.Ts != messageTs {
+		return nil, fmt.Errorf("parsing chat.delete: successful response identified a different message")
+	}
+	return &result, nil
+}
+
+func encodeMessageContent(text, prefix string) (string, string, error) {
+	if prefix == "" {
+		return text, "", nil
+	}
+	blocks, err := json.Marshal(messageBlocks(text, prefix))
+	if err != nil {
+		return "", "", err
+	}
+	return prefix + "\n\n" + text, string(blocks), nil
 }
 
 func messageBlocks(text, prefix string) []slackBlock {

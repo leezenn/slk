@@ -23,13 +23,17 @@ const (
 type Mutation string
 
 const (
-	MutationReply Mutation = "reply"
-	MutationWrite Mutation = "write"
+	MutationDelete  Mutation = "delete"
+	MutationReplace Mutation = "replace"
+	MutationReply   Mutation = "reply"
+	MutationWrite   Mutation = "write"
 )
 
 var knownMutations = map[Mutation]struct{}{
-	MutationReply: {},
-	MutationWrite: {},
+	MutationDelete:  {},
+	MutationReplace: {},
+	MutationReply:   {},
+	MutationWrite:   {},
 }
 
 // Settings contains effective slk configuration after defaults are applied.

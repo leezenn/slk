@@ -172,8 +172,8 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 }
 
 var commandNames = []string{
-	"activity", "auth", "channels", "config", "download", "members", "notes", "open",
-	"read", "recent", "reply", "search", "thread", "users", "whoami", "write",
+	"activity", "auth", "channels", "config", "delete", "download", "members", "notes", "open",
+	"read", "recent", "replace", "reply", "search", "thread", "users", "whoami", "write",
 }
 
 func TestNewRootCommandBuildsFreshRunECommands(t *testing.T) {
@@ -259,6 +259,17 @@ func TestEveryCommandHelpIsIsolated(t *testing.T) {
 	}
 }
 
+func TestRootReservesEditAndExposesReplace(t *testing.T) {
+	code, stdout, stderr := runIsolated(t, forbiddenDependencies(t), context.Background(), "--help")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "\n  replace ") || strings.Contains(stdout, "\n  edit ") {
+		t.Fatalf("root help = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runIsolated(t, forbiddenDependencies(t), context.Background(), "edit", "anything")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "unknown command") {
+		t.Fatalf("reserved edit = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+}
+
 func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 	tests := []struct {
 		name string
@@ -272,6 +283,8 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		{name: "interactive auth clear", args: []string{"auth", "--interactive", "--clear"}},
 		{name: "invalid auth token", args: []string{"auth", "xoxb-not-supported"}},
 		{name: "channels shape", args: []string{"channels", "extra"}},
+		{name: "delete shape", args: []string{"delete"}},
+		{name: "delete permalink", args: []string{"delete", "not-a-permalink", "--yes"}},
 		{name: "download shape", args: []string{"download"}},
 		{name: "members shape", args: []string{"members"}},
 		{name: "notes shape", args: []string{"notes", "extra"}},
@@ -281,6 +294,9 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		{name: "recent limit", args: []string{"recent", "--limit", "0"}},
 		{name: "recent type", args: []string{"recent", "--type", "unknown"}},
 		{name: "recent time", args: []string{"recent", "--since", "not-time"}},
+		{name: "replace shape", args: []string{"replace"}},
+		{name: "replace text", args: []string{"replace", "https://workspace.slack.com/archives/C12345678/p1705312325000100"}},
+		{name: "replace permalink", args: []string{"replace", "not-a-permalink", "--text", "complete replacement"}},
 		{name: "reply shape", args: []string{"reply"}},
 		{name: "reply text", args: []string{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100"}},
 		{name: "reply permalink", args: []string{"reply", "not-a-permalink", "--text", "hello"}},
@@ -322,6 +338,25 @@ func TestDeniedMutationsShapeHelpAndRefuseInvocation(t *testing.T) {
 		other    config.Mutation
 		args     []string
 	}{
+		{
+			mutation: config.MutationDelete,
+			other:    config.MutationWrite,
+			args: []string{
+				"delete",
+				"https://workspace.slack.com/archives/C12345678/p1705312325000100",
+				"--yes",
+			},
+		},
+		{
+			mutation: config.MutationReplace,
+			other:    config.MutationWrite,
+			args: []string{
+				"replace",
+				"https://workspace.slack.com/archives/C12345678/p1705312325000100",
+				"--text",
+				"complete replacement",
+			},
+		},
 		{
 			mutation: config.MutationReply,
 			other:    config.MutationWrite,

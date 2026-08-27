@@ -194,6 +194,146 @@ func TestPostMessageReturnsTypedSlackRejection(t *testing.T) {
 	}
 }
 
+func TestGetMessageRejectsDifferentTimestamp(t *testing.T) {
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"messages":[{"user":"U12345678","ts":"1700000002.000003"}]}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+	if _, err := client.GetMessage("C12345678", "1700000001.000002"); err == nil || !strings.Contains(err.Error(), "message not found") {
+		t.Fatalf("GetMessage() error = %v, want exact timestamp rejection", err)
+	}
+}
+
+func TestGetReplyUsesExactTimestampBounds(t *testing.T) {
+	const (
+		channelID = "C12345678"
+		threadTs  = "1700000000.000001"
+		replyTs   = "1700000001.000002"
+	)
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/conversations.replies" {
+			t.Fatalf("method path = %q", req.URL.Path)
+		}
+		if err := req.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]string{
+			"channel": channelID, "ts": threadTs, "oldest": replyTs,
+			"latest": replyTs, "inclusive": "true", "limit": "1",
+		}
+		for key, value := range want {
+			if got := req.Form.Get(key); got != value {
+				t.Fatalf("%s = %q, want %q", key, got, value)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"messages":[{"user":"U12345678","text":"hello","ts":"` + replyTs + `"}]}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	message, err := client.GetReply(channelID, threadTs, replyTs)
+	if err != nil {
+		t.Fatalf("GetReply() error = %v", err)
+	}
+	if message.Ts != replyTs || message.User != "U12345678" {
+		t.Fatalf("GetReply() = %#v", message)
+	}
+}
+
+func TestUpdateMessageReplacesCompleteContent(t *testing.T) {
+	tests := []struct {
+		name       string
+		prefix     string
+		wantText   string
+		wantBlocks string
+	}{
+		{name: "prefix blocks", prefix: "agent assisted", wantText: "agent assisted\n\nreplacement"},
+		{name: "empty prefix removes old blocks", wantText: "replacement", wantBlocks: "[]"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClient("test-token")
+			client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != "/api/chat.update" {
+					t.Fatalf("method path = %q", req.URL.Path)
+				}
+				if err := req.ParseForm(); err != nil {
+					t.Fatal(err)
+				}
+				if got := req.Form.Get("channel"); got != "C12345678" {
+					t.Fatalf("channel = %q", got)
+				}
+				if got := req.Form.Get("ts"); got != "1700000001.000002" {
+					t.Fatalf("ts = %q", got)
+				}
+				if got := req.Form.Get("text"); got != test.wantText {
+					t.Fatalf("text = %q, want %q", got, test.wantText)
+				}
+				blocks := req.Form.Get("blocks")
+				if test.wantBlocks != "" {
+					if blocks != test.wantBlocks {
+						t.Fatalf("blocks = %q, want %q", blocks, test.wantBlocks)
+					}
+				} else {
+					var decoded []slackBlock
+					if err := json.Unmarshal([]byte(blocks), &decoded); err != nil || len(decoded) != 2 || decoded[0].Type != "context" || decoded[1].Text == nil || decoded[1].Text.Text != "replacement" {
+						t.Fatalf("replacement blocks = %#v, error %v", decoded, err)
+					}
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(`{"ok":true,"channel":"C12345678","ts":"1700000001.000002"}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			})
+
+			result, err := client.UpdateMessage(UpdateMessageRequest{
+				ChannelID: "C12345678", MessageTs: "1700000001.000002",
+				Text: "replacement", Prefix: test.prefix,
+			})
+			if err != nil || result.Channel != "C12345678" || result.Ts != "1700000001.000002" {
+				t.Fatalf("UpdateMessage() = %#v, %v", result, err)
+			}
+		})
+	}
+}
+
+func TestDeleteMessageTargetsExactMessage(t *testing.T) {
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat.delete" {
+			t.Fatalf("method path = %q", req.URL.Path)
+		}
+		if err := req.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if req.Form.Get("channel") != "C12345678" || req.Form.Get("ts") != "1700000001.000002" {
+			t.Fatalf("delete form = %v", req.Form)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"channel":"C12345678","ts":"1700000001.000002"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	result, err := client.DeleteMessage("C12345678", "1700000001.000002")
+	if err != nil || result.Channel != "C12345678" || result.Ts != "1700000001.000002" {
+		t.Fatalf("DeleteMessage() = %#v, %v", result, err)
+	}
+}
+
 func TestValidateSlackFileURL(t *testing.T) {
 	tests := []struct {
 		name    string

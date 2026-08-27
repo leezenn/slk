@@ -24,9 +24,9 @@ func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 		{name: "tool disabled", content: stringPointer(`{"disabled":true}`), wantPrefix: DefaultMessagePrefix, wantOff: true},
 		{name: "omitted deny list allows all", content: stringPointer(`{}`), wantPrefix: DefaultMessagePrefix},
 		{name: "empty deny list allows all", content: stringPointer(`{"deny_mutations":[]}`), wantPrefix: DefaultMessagePrefix},
-		{name: "explicit mutations denied", content: stringPointer(`{"deny_mutations":["reply","write"]}`), wantPrefix: DefaultMessagePrefix, wantDenied: []Mutation{MutationReply, MutationWrite}},
+		{name: "explicit mutations denied", content: stringPointer(`{"deny_mutations":["delete","replace","reply","write"]}`), wantPrefix: DefaultMessagePrefix, wantDenied: []Mutation{MutationDelete, MutationReplace, MutationReply, MutationWrite}},
 		{name: "duplicate mutation deduplicated", content: stringPointer(`{"deny_mutations":["write","write"]}`), wantPrefix: DefaultMessagePrefix, wantDenied: []Mutation{MutationWrite}},
-		{name: "unknown mutation rejected", content: stringPointer(`{"deny_mutations":["delete"]}`), wantErr: "unknown command"},
+		{name: "unknown mutation rejected", content: stringPointer(`{"deny_mutations":["unknown"]}`), wantErr: "unknown command"},
 		{name: "wrong deny list type rejected", content: stringPointer(`{"deny_mutations":"write"}`), wantErr: "cannot unmarshal"},
 		{name: "whitespace only prefix rejected", content: stringPointer(`{"message_prefix":"   "}`), wantErr: "must be empty or contain visible text"},
 		{name: "wrong prefix type rejected", content: stringPointer(`{"message_prefix":false}`), wantErr: "cannot unmarshal"},
@@ -59,7 +59,7 @@ func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 			if len(settings.DeniedMutations) != len(test.wantDenied) {
 				t.Fatalf("denied mutations = %v, want %v", settings.DeniedMutations, test.wantDenied)
 			}
-			for _, mutation := range []Mutation{MutationReply, MutationWrite} {
+			for _, mutation := range []Mutation{MutationDelete, MutationReplace, MutationReply, MutationWrite} {
 				wantDenied := containsMutation(test.wantDenied, mutation)
 				if got := settings.MutationDenied(mutation); got != wantDenied {
 					t.Fatalf("MutationDenied(%q) = %v, want %v", mutation, got, wantDenied)
@@ -98,7 +98,7 @@ func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 	document := Document{
 		Disabled:        true,
 		MessagePrefix:   &prefix,
-		DeniedMutations: []Mutation{MutationWrite, MutationReply, MutationWrite},
+		DeniedMutations: []Mutation{MutationWrite, MutationDelete, MutationReply, MutationReplace, MutationWrite},
 	}
 	if err := SaveFile(path, document); err != nil {
 		t.Fatalf("SaveFile() error = %v", err)
@@ -126,17 +126,27 @@ func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 	if !stored.Disabled || stored.MessagePrefix != prefix {
 		t.Fatalf("stored config = %#v", stored)
 	}
-	wantDenied := []Mutation{MutationReply, MutationWrite}
-	if len(stored.DeniedMutations) != len(wantDenied) || stored.DeniedMutations[0] != wantDenied[0] || stored.DeniedMutations[1] != wantDenied[1] {
+	wantDenied := []Mutation{MutationDelete, MutationReplace, MutationReply, MutationWrite}
+	if len(stored.DeniedMutations) != len(wantDenied) {
 		t.Fatalf("stored denied mutations = %v, want %v", stored.DeniedMutations, wantDenied)
+	}
+	for index, mutation := range wantDenied {
+		if stored.DeniedMutations[index] != mutation {
+			t.Fatalf("stored denied mutations = %v, want %v", stored.DeniedMutations, wantDenied)
+		}
 	}
 
 	loaded, err := LoadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.Disabled || loaded.MessagePrefix != prefix || !loaded.MutationDenied(MutationReply) || !loaded.MutationDenied(MutationWrite) {
+	if !loaded.Disabled || loaded.MessagePrefix != prefix {
 		t.Fatalf("loaded settings = %#v", loaded)
+	}
+	for _, mutation := range wantDenied {
+		if !loaded.MutationDenied(mutation) {
+			t.Fatalf("loaded settings allow %q: %#v", mutation, loaded)
+		}
 	}
 }
 

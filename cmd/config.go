@@ -7,7 +7,6 @@ import (
 
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
-	"github.com/leezenn/slk/internal/format"
 	"github.com/spf13/cobra"
 )
 
@@ -68,7 +67,7 @@ func newConfigSetCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Com
 	return &cobra.Command{
 		Use:   "set message-prefix <text>",
 		Short: "Set one configuration preference",
-		Long: `Set the message prefix rendered before top-level messages and thread replies.
+		Long: `Set the message prefix rendered before new and replaced messages.
 
 An explicitly empty text value disables the prefix. Use
 'slk config reset message-prefix' to return to the built-in default.`,
@@ -129,7 +128,7 @@ func newMutationPolicyCommand(deps Dependencies, rootOptions *rootOptions, deny 
 		short = "Deny one Slack mutation command"
 	}
 	return &cobra.Command{
-		Use:   verb + " <reply|write>",
+		Use:   verb + " <delete|replace|reply|write>",
 		Short: short,
 		Args:  argumentValidator(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -259,7 +258,6 @@ func runConfigSummary(cmd *cobra.Command, deps Dependencies, rootOptions *rootOp
 		}
 		if configured {
 			payload["auth_source"] = authResult.Source
-			payload["token_preview"] = auth.MaskToken(authResult.Token)
 		}
 		return writeJSON(cmd, payload)
 	}
@@ -335,15 +333,6 @@ func writeConfigReceipt(cmd *cobra.Command, rootOptions *rootOptions, action, pa
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s.\n", strings.ToUpper(action[:1])+action[1:])
 	fmt.Fprintf(cmd.OutOrStdout(), "Configuration: %s\n", path)
-	return nil
-}
-
-func writeJSON(cmd *cobra.Command, payload map[string]interface{}) error {
-	out, err := format.FormatJSON(payload)
-	if err != nil {
-		return internalError()
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), out)
 	return nil
 }
 

@@ -56,16 +56,18 @@ func TestConfigSummaryIsReadOnlyAndSecretSafe(t *testing.T) {
 	}
 }
 
-func TestConfigSummaryJSONUsesTokenPreview(t *testing.T) {
+func TestConfigSummaryJSONOmitsTokenMaterial(t *testing.T) {
 	credentials := &fakeCredentialStore{
 		getResult: auth.Result{Token: "xoxp-secret-value", Source: auth.SourceKeychain},
 	}
 	code, stdout, stderr := runIsolated(t, isolatedDependencies(credentials), context.Background(), "--json", "config")
-	if code != 0 || stderr != "" || !strings.Contains(stdout, `"token_preview": "xoxp-sec..."`) {
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"auth_configured": true`) || !strings.Contains(stdout, `"auth_source": "keychain"`) {
 		t.Fatalf("config JSON = code %d stdout %q stderr %q", code, stdout, stderr)
 	}
-	if strings.Contains(stdout, `"token":`) || strings.Contains(stdout, "xoxp-secret-value") {
-		t.Fatalf("config JSON exposed token-shaped output: %q", stdout)
+	for _, forbidden := range []string{`"token":`, `"token_preview":`, "xoxp-secret-value", "xoxp-sec..."} {
+		if strings.Contains(stdout, forbidden) {
+			t.Fatalf("config JSON exposed %q: %q", forbidden, stdout)
+		}
 	}
 }
 
@@ -156,7 +158,7 @@ func TestConfigDisableCollapsesHelpAndBlocksOperationalCommands(t *testing.T) {
 			t.Fatalf("disabled help omitted %q: %q", want, stdout)
 		}
 	}
-	for _, hidden := range []string{"\n  auth ", "\n  read ", "\n  reply ", "\n  write "} {
+	for _, hidden := range []string{"\n  auth ", "\n  delete ", "\n  read ", "\n  replace ", "\n  reply ", "\n  write "} {
 		if strings.Contains(stdout, hidden) {
 			t.Fatalf("disabled help exposed %q: %q", hidden, stdout)
 		}
@@ -246,7 +248,7 @@ func TestConfigSetupChangesPreferencesThroughOneInputReader(t *testing.T) {
 	deps := isolatedDependencies(credentials)
 	deps.Configuration = configuration
 
-	input := "y\ny\nCustom context\nn\n\n"
+	input := "y\ny\nCustom context\nn\n\n\nn\n"
 	code, stdout, stderr := runIsolatedWithInput(t, deps, input, "config", "setup")
 	if code != 0 || stderr != "" {
 		t.Fatalf("setup = code %d stdout %q stderr %q", code, stdout, stderr)
@@ -255,7 +257,10 @@ func TestConfigSetupChangesPreferencesThroughOneInputReader(t *testing.T) {
 		t.Fatalf("setup prefix = %#v", configuration.document.MessagePrefix)
 	}
 	settings := configuration.document.Effective()
-	if !settings.MutationDenied(config.MutationReply) || settings.MutationDenied(config.MutationWrite) {
+	if !settings.MutationDenied(config.MutationReply) ||
+		settings.MutationDenied(config.MutationWrite) ||
+		settings.MutationDenied(config.MutationReplace) ||
+		!settings.MutationDenied(config.MutationDelete) {
 		t.Fatalf("setup denied mutations = %v", settings.DeniedMutations)
 	}
 	if configuration.saveCalls != 1 || !strings.Contains(stdout, "Preferences saved") {

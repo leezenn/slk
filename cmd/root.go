@@ -56,6 +56,12 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 		newUsersCommand(deps, options),
 		newWhoamiCommand(deps, options),
 	)
+	if !settings.MutationDenied(config.MutationDelete) {
+		root.AddCommand(newDeleteCommand(deps, options))
+	}
+	if !settings.MutationDenied(config.MutationReplace) {
+		root.AddCommand(newReplaceCommand(deps, options, settings.MessagePrefix))
+	}
 	if !settings.MutationDenied(config.MutationReply) {
 		root.AddCommand(newReplyCommand(deps, options, settings.MessagePrefix))
 	}
@@ -69,15 +75,15 @@ func rootShort(settings config.Settings) string {
 	if settings.Disabled {
 		return "slk is disabled by local configuration"
 	}
-	hasReply := !settings.MutationDenied(config.MutationReply)
-	hasWrite := !settings.MutationDenied(config.MutationWrite)
+	canPost := mutationAllowed(settings, config.MutationReply, config.MutationWrite)
+	canModify := mutationAllowed(settings, config.MutationDelete, config.MutationReplace)
 	switch {
-	case hasReply && hasWrite:
+	case canPost && canModify:
+		return "Explore Slack context and manage messages"
+	case canPost:
 		return "Explore Slack context and post messages"
-	case hasReply:
-		return "Explore Slack context and reply to message threads"
-	case hasWrite:
-		return "Explore Slack context and write messages"
+	case canModify:
+		return "Explore Slack context and modify your messages"
 	default:
 		return "Explore Slack context"
 	}
@@ -99,22 +105,23 @@ Configuration:
   $XDG_CONFIG_HOME/slk/config.json (defaults to ~/.config/slk/config.json)`
 	}
 	description := "Explore Slack activity, channels, DMs, threads, and files"
-	hasReply := !settings.MutationDenied(config.MutationReply)
-	hasWrite := !settings.MutationDenied(config.MutationWrite)
-	switch {
-	case hasReply && hasWrite:
-		description += ", write top-level messages, and reply to message threads"
-	case hasReply:
-		description += ", and reply to message threads"
-	case hasWrite:
-		description += ", and write top-level messages"
-	default:
-		description += "."
+	capabilities := make([]string, 0, 4)
+	if !settings.MutationDenied(config.MutationWrite) {
+		capabilities = append(capabilities, "write top-level messages")
 	}
-	if hasReply || hasWrite {
-		description += "."
+	if !settings.MutationDenied(config.MutationReply) {
+		capabilities = append(capabilities, "reply to threads")
 	}
-	return description + `
+	if !settings.MutationDenied(config.MutationReplace) {
+		capabilities = append(capabilities, "replace your messages")
+	}
+	if !settings.MutationDenied(config.MutationDelete) {
+		capabilities = append(capabilities, "delete your messages")
+	}
+	if len(capabilities) > 0 {
+		description += "; " + strings.Join(capabilities, ", ")
+	}
+	return description + `.
 
 Environment:
   SLACK_TOKEN       Fallback token if keychain is not configured
@@ -148,7 +155,22 @@ func rootExamples(settings config.Settings) string {
 	if !settings.MutationDenied(config.MutationReply) {
 		examples = append(examples, "  slk reply '<slack-permalink>' --text 'We will ship the fix tomorrow.'")
 	}
+	if !settings.MutationDenied(config.MutationReplace) {
+		examples = append(examples, "  slk replace '<slack-permalink>' --text 'The corrected complete message.'")
+	}
+	if !settings.MutationDenied(config.MutationDelete) {
+		examples = append(examples, "  slk delete '<slack-permalink>' --yes")
+	}
 	return strings.Join(examples, "\n") + "\n\nTip: quoting short fragments from results helps users verify your interpretation."
+}
+
+func mutationAllowed(settings config.Settings, mutations ...config.Mutation) bool {
+	for _, mutation := range mutations {
+		if !settings.MutationDenied(mutation) {
+			return true
+		}
+	}
+	return false
 }
 
 // Execute runs one fresh command tree and returns its process exit code.

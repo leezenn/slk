@@ -98,8 +98,18 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 	if err != nil {
 		return err
 	}
+	allowReplace, err := promptYesNo(cmd, reader, "Allow complete message replacement?", !settings.MutationDenied(config.MutationReplace))
+	if err != nil {
+		return err
+	}
+	allowDelete, err := promptYesNo(cmd, reader, "Allow permanent message deletion?", !settings.MutationDenied(config.MutationDelete))
+	if err != nil {
+		return err
+	}
 	setMutationDenied(&document, config.MutationReply, !allowReply)
 	setMutationDenied(&document, config.MutationWrite, !allowWrite)
+	setMutationDenied(&document, config.MutationReplace, !allowReplace)
+	setMutationDenied(&document, config.MutationDelete, !allowDelete)
 	if err := saveConfigDocument(store, document); err != nil {
 		return err
 	}
