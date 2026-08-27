@@ -50,7 +50,23 @@ This command is deterministic and strictly non-interactive. --match must occur
 exactly once in the current semantic body; zero matches fail as stale and multiple
 matches fail as ambiguous. --with must be supplied and may be explicitly empty to
 remove the fragment. Existing slk message prefixes and attachments are preserved.
-Unsupported custom block layouts are refused; use 'slk replace' for those messages.`,
+
+Supported message layouts:
+  - plain messages and native Slack rich-text messages
+  - slk-generated context-prefix plus mrkdwn section-body messages
+The known Slack-owned block_id and verbatim fields are accepted. Other custom
+block layouts are refused.
+
+JSON success contract (--json):
+  {"ok":true,"edited":true,"operation":"replace_exact",
+   "target_permalink":"...","open_command":"..."}
+
+Contract drift:
+If this JSON contract differs or a normally supported message is refused, stop.
+Do not strip blocks, reconstruct the message, or automatically use 'slk replace'.
+For a refusal, rerun with --verbose. Inform the human or file an issue with the slk
+version and sanitized structural detail. Never include message text, private
+permalinks, or credentials in public reports.`,
 		Example: `  slk edit '<slack-permalink>' --match 'deploy tomorow' --with 'deploy tomorrow'
   slk edit '<slack-permalink>' --match 'obsolete sentence' --with ''`,
 		Args: argumentValidator(cobra.ExactArgs(1)),
@@ -87,7 +103,10 @@ func runEdit(cmd *cobra.Command, rootOptions *rootOptions, client editClient, ta
 	}
 	content, err := decodeEditableMessageContent(message)
 	if err != nil {
-		return unsupportedEditLayoutError()
+		if rootOptions.verbose {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Unsupported layout detail: %s\n", safeDynamic(err.Error(), 256))
+		}
+		return unsupportedEditLayoutError(rootOptions.verbose)
 	}
 
 	occurrences := overlappingOccurrenceCount(content.body, match)
@@ -156,19 +175,28 @@ func decodeEditableMessageContent(message *api.Message) (editableMessageContent,
 	}
 
 	contextBlock, err := decodeEditableBlock(message.Blocks[0], "type", "block_id", "elements")
-	if err != nil || contextBlock.Type != "context" || len(contextBlock.Elements) != 1 {
-		return editableMessageContent{}, fmt.Errorf("unsupported context block")
+	if err != nil {
+		return editableMessageContent{}, fmt.Errorf("context block: %w", err)
+	}
+	if contextBlock.Type != "context" || len(contextBlock.Elements) != 1 {
+		return editableMessageContent{}, fmt.Errorf("context block must contain exactly one context element")
 	}
 	prefix, err := decodeEditableText(contextBlock.Elements[0])
-	if err != nil || prefix.Type != "mrkdwn" || prefix.Text == "" {
-		return editableMessageContent{}, fmt.Errorf("unsupported context element")
+	if err != nil {
+		return editableMessageContent{}, fmt.Errorf("context element: %w", err)
+	}
+	if prefix.Type != "mrkdwn" || prefix.Text == "" {
+		return editableMessageContent{}, fmt.Errorf("context element must be non-empty mrkdwn")
 	}
 
 	var body strings.Builder
-	for _, rawBlock := range message.Blocks[1:] {
+	for index, rawBlock := range message.Blocks[1:] {
 		section, err := decodeEditableBlock(rawBlock, "type", "block_id", "text")
-		if err != nil || section.Type != "section" || section.Text == nil || section.Text.Type != "mrkdwn" {
-			return editableMessageContent{}, fmt.Errorf("unsupported section block")
+		if err != nil {
+			return editableMessageContent{}, fmt.Errorf("section block %d: %w", index+1, err)
+		}
+		if section.Type != "section" || section.Text == nil || section.Text.Type != "mrkdwn" {
+			return editableMessageContent{}, fmt.Errorf("section block %d must contain mrkdwn text", index+1)
 		}
 		body.WriteString(section.Text.Text)
 	}
@@ -222,10 +250,25 @@ func requireObjectKeys(raw json.RawMessage, allowedKeys ...string) error {
 	}
 	for key := range object {
 		if _, ok := allowed[key]; !ok {
-			return fmt.Errorf("unsupported field %q", key)
+			return fmt.Errorf("unsupported field %s", schemaFieldLabel(key))
 		}
 	}
 	return nil
+}
+
+func schemaFieldLabel(field string) string {
+	if len(field) == 0 || len(field) > 64 {
+		return "[redacted]"
+	}
+	for _, character := range field {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '_' && character != '-' && character != '.' {
+			return "[redacted]"
+		}
+	}
+	return fmt.Sprintf("%q", field)
 }
 
 func overlappingOccurrenceCount(body, match string) int {
@@ -246,10 +289,14 @@ func overlappingOccurrenceCount(body, match string) int {
 	return count
 }
 
-func unsupportedEditLayoutError() error {
+func unsupportedEditLayoutError(verbose bool) error {
+	action := "Do not strip blocks or automatically use 'slk replace'. Rerun with --verbose and report the sanitized layout detail to the human."
+	if verbose {
+		action = "Do not strip blocks or automatically use 'slk replace'. Report the sanitized layout detail above to the human."
+	}
 	return refusedError(
 		"slk cannot safely edit this message's structured block layout.",
-		"Use 'slk replace' for an intentional complete-body replacement.",
+		action,
 	)
 }
 

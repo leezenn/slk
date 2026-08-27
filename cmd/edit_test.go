@@ -52,6 +52,28 @@ func (f *fakeEditClient) UpdateMessage(request api.UpdateMessageRequest) (*api.U
 	return f.updateResult, f.updateErr
 }
 
+func TestEditHelpDocumentsOutputLayoutAndDriftContracts(t *testing.T) {
+	code, stdout, stderr := runIsolated(t, forbiddenDependencies(t), context.Background(), "edit", "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("edit help = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"Supported message layouts:",
+		"block_id and verbatim",
+		"JSON success contract (--json):",
+		`"operation":"replace_exact"`,
+		"Contract drift:",
+		"Do not strip blocks",
+		"rerun with --verbose",
+		"Never include message text, private",
+		"permalinks, or credentials in public reports.",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("edit help omitted %q: %q", want, stdout)
+		}
+	}
+}
+
 func TestRunEditPatchesPlainMessageAndVerifies(t *testing.T) {
 	target := rootMessageTarget()
 	client := &fakeEditClient{
@@ -264,24 +286,61 @@ func TestRunEditSupportsSlackRichTextAsCanonicalPlainBody(t *testing.T) {
 	}
 }
 
-func TestRunEditRefusesUnsupportedCustomBlocks(t *testing.T) {
+func TestRunEditRefusesUnsupportedCustomBlocksWithSanitizedVerboseDetail(t *testing.T) {
 	target := rootMessageTarget()
-	custom := rawJSON(t, map[string]interface{}{
+	message := prefixedMessage(t, "U12345678", target.messageTs, "prefix", "old body")
+	message.Blocks[1] = rawJSON(t, map[string]interface{}{
 		"type":      "section",
 		"text":      map[string]interface{}{"type": "mrkdwn", "text": "old body"},
-		"accessory": map[string]interface{}{"type": "button", "text": map[string]string{"type": "plain_text", "text": "Go"}},
+		"accessory": map[string]interface{}{"type": "button", "text": map[string]string{"type": "plain_text", "text": "private button text"}},
 	})
-	client := &fakeEditClient{
-		selfID:   "U12345678",
-		messages: []*api.Message{{User: "U12345678", Ts: target.messageTs, Text: "old body", Blocks: []json.RawMessage{custom}}},
-	}
-	err := runEdit(&cobra.Command{}, &rootOptions{}, client, target, "old", "new")
+
+	client := &fakeEditClient{selfID: "U12345678", messages: []*api.Message{message}}
+	var verboseStderr bytes.Buffer
+	command := &cobra.Command{}
+	command.SetErr(&verboseStderr)
+	err := runEdit(command, &rootOptions{verbose: true}, client, target, "old", "new")
 	var commandErr *CommandError
-	if !errors.As(err, &commandErr) || commandErr.Code != ErrorRefused || !strings.Contains(commandErr.Action, "slk replace") {
+	if !errors.As(err, &commandErr) || commandErr.Code != ErrorRefused ||
+		!strings.Contains(commandErr.Action, "Do not strip blocks") || strings.Contains(commandErr.Action, "Rerun with --verbose") {
 		t.Fatalf("error = %#v", err)
+	}
+	for _, want := range []string{`section block 1`, `unsupported field "accessory"`} {
+		if !strings.Contains(verboseStderr.String(), want) {
+			t.Fatalf("verbose detail omitted %q: %q", want, verboseStderr.String())
+		}
+	}
+	for _, forbidden := range []string{"old body", "private button text", target.permalink} {
+		if strings.Contains(verboseStderr.String(), forbidden) {
+			t.Fatalf("verbose detail exposed %q: %q", forbidden, verboseStderr.String())
+		}
 	}
 	if client.updateCalls != 0 {
 		t.Fatalf("unsupported edit made %d update calls", client.updateCalls)
+	}
+
+	nonverboseClient := &fakeEditClient{selfID: "U12345678", messages: []*api.Message{message}}
+	var nonverboseStderr bytes.Buffer
+	nonverboseCommand := &cobra.Command{}
+	nonverboseCommand.SetErr(&nonverboseStderr)
+	nonverboseErr := runEdit(nonverboseCommand, &rootOptions{}, nonverboseClient, target, "old", "new")
+	var nonverboseCommandErr *CommandError
+	if !errors.As(nonverboseErr, &nonverboseCommandErr) || !strings.Contains(nonverboseCommandErr.Action, "Rerun with --verbose") {
+		t.Fatalf("nonverbose error = %#v", nonverboseErr)
+	}
+	if nonverboseStderr.String() != "" {
+		t.Fatalf("nonverbose edit exposed structural detail: %q", nonverboseStderr.String())
+	}
+}
+
+func TestRequireObjectKeysRedactsUnsafeFieldNames(t *testing.T) {
+	raw := rawJSON(t, map[string]interface{}{
+		"type":                 "section",
+		"private message text": true,
+	})
+	err := requireObjectKeys(raw, "type")
+	if err == nil || !strings.Contains(err.Error(), "[redacted]") || strings.Contains(err.Error(), "private message text") {
+		t.Fatalf("unsafe field error = %v", err)
 	}
 }
 
