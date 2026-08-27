@@ -15,14 +15,11 @@ type fakeReplyClient struct {
 	postErr      error
 	permalink    string
 	permalinkErr error
-	channelID    string
-	threadTs     string
-	text         string
-	prefix       string
+	request      api.PostMessageRequest
 }
 
-func (f *fakeReplyClient) PostReply(channelID, threadTs, text, prefix string) (*api.PostMessageResult, error) {
-	f.channelID, f.threadTs, f.text, f.prefix = channelID, threadTs, text, prefix
+func (f *fakeReplyClient) PostMessage(request api.PostMessageRequest) (*api.PostMessageResult, error) {
+	f.request = request
 	return f.posted, f.postErr
 }
 
@@ -45,8 +42,14 @@ func TestRunReplyReturnsCanonicalReceipt(t *testing.T) {
 	if err := runReply(command, &rootOptions{}, client, target, "We will ship the fix tomorrow.", ":mechanical_arm: agent assisted response."); err != nil {
 		t.Fatalf("runReply returned error: %v", err)
 	}
-	if client.channelID != target.channelID || client.threadTs != target.threadTs || client.text != "We will ship the fix tomorrow." || client.prefix != ":mechanical_arm: agent assisted response." {
-		t.Fatalf("posted arguments = channel %q thread %q text %q prefix %q", client.channelID, client.threadTs, client.text, client.prefix)
+	wantRequest := api.PostMessageRequest{
+		ChannelID: target.channelID,
+		ThreadTs:  target.threadTs,
+		Text:      "We will ship the fix tomorrow.",
+		Prefix:    ":mechanical_arm: agent assisted response.",
+	}
+	if client.request != wantRequest {
+		t.Fatalf("posted request = %#v, want %#v", client.request, wantRequest)
 	}
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want empty", stderr.String())

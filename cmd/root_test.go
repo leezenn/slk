@@ -43,7 +43,7 @@ func isolatedDependencies(store auth.Store) Dependencies {
 	return Dependencies{
 		Credentials: store,
 		LoadConfig: func() (config.Settings, error) {
-			return config.Settings{ReplyPrefix: config.DefaultReplyPrefix}, nil
+			return config.Defaults(), nil
 		},
 		NewClient: func(string) *api.Client {
 			panic("Slack client factory must not be called")
@@ -64,8 +64,7 @@ func forbiddenDependencies(t *testing.T) Dependencies {
 	return Dependencies{
 		Credentials: &forbiddenCredentialStore{t: t},
 		LoadConfig: func() (config.Settings, error) {
-			t.Fatal("test reached the config seam")
-			return config.Settings{}, nil
+			return config.Defaults(), nil
 		},
 		NewClient: func(string) *api.Client {
 			t.Fatal("test reached the live Slack client seam")
@@ -104,7 +103,7 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 
 var commandNames = []string{
 	"activity", "auth", "channels", "download", "members", "notes", "open",
-	"read", "recent", "reply", "search", "thread", "users", "whoami",
+	"read", "recent", "reply", "search", "thread", "users", "whoami", "write",
 }
 
 func TestNewRootCommandBuildsFreshRunECommands(t *testing.T) {
@@ -215,6 +214,9 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		{name: "reply shape", args: []string{"reply"}},
 		{name: "reply text", args: []string{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100"}},
 		{name: "reply permalink", args: []string{"reply", "not-a-permalink", "--text", "hello"}},
+		{name: "write shape", args: []string{"write"}},
+		{name: "write text", args: []string{"write", "general"}},
+		{name: "write target", args: []string{"write", "", "--text", "hello"}},
 		{name: "search shape", args: []string{"search"}},
 		{name: "thread shape", args: []string{"thread", "general"}},
 		{name: "users shape", args: []string{"users", "one", "two"}},
@@ -239,6 +241,68 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 			}
 			if store.getCalls != 0 || store.setCalls != 0 || store.clearCalls != 0 {
 				t.Fatalf("credential dependency called: %+v", store)
+			}
+		})
+	}
+}
+
+func TestDeniedMutationsShapeHelpAndRefuseInvocation(t *testing.T) {
+	tests := []struct {
+		mutation config.Mutation
+		other    config.Mutation
+		args     []string
+	}{
+		{
+			mutation: config.MutationReply,
+			other:    config.MutationWrite,
+			args: []string{
+				"reply",
+				"https://workspace.slack.com/archives/C12345678/p1705312325000100",
+				"--text",
+				"hello",
+			},
+		},
+		{
+			mutation: config.MutationWrite,
+			other:    config.MutationReply,
+			args:     []string{"--json", "write", "--help"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(string(test.mutation), func(t *testing.T) {
+			store := &fakeCredentialStore{}
+			deps := isolatedDependencies(store)
+			deps.LoadConfig = func() (config.Settings, error) {
+				settings := config.Defaults()
+				settings.DeniedMutations = []config.Mutation{test.mutation}
+				return settings, nil
+			}
+
+			code, stdout, stderr := runIsolated(t, deps, context.Background(), "--help")
+			if code != 0 || stderr != "" {
+				t.Fatalf("help = code %d stdout %q stderr %q", code, stdout, stderr)
+			}
+			if strings.Contains(stdout, "\n  "+string(test.mutation)+" ") || strings.Contains(stdout, "slk "+string(test.mutation)+" ") {
+				t.Fatalf("help exposed denied mutation %q: %q", test.mutation, stdout)
+			}
+			if !strings.Contains(stdout, "\n  "+string(test.other)+" ") || !strings.Contains(stdout, "slk "+string(test.other)+" ") {
+				t.Fatalf("help omitted allowed mutation %q: %q", test.other, stdout)
+			}
+
+			code, stdout, stderr = runIsolated(t, deps, context.Background(), test.args...)
+			if code != 1 || stdout != "" || !strings.Contains(stderr, "disabled by configuration") || !strings.Contains(stderr, "deny_mutations") {
+				t.Fatalf("denied invocation = code %d stdout %q stderr %q", code, stdout, stderr)
+			}
+			if strings.Contains(stderr, "Usage:") {
+				t.Fatalf("denied invocation rendered confusing usage: %q", stderr)
+			}
+			code, stdout, stderr = runIsolated(t, deps, context.Background(), "help", string(test.mutation))
+			if code != 1 || stdout != "" || !strings.Contains(stderr, "disabled by configuration") {
+				t.Fatalf("denied help topic = code %d stdout %q stderr %q", code, stdout, stderr)
+			}
+			if store.getCalls != 0 {
+				t.Fatalf("credential Get calls = %d, want zero", store.getCalls)
 			}
 		})
 	}
@@ -285,13 +349,18 @@ func TestCanceledContextStopsEveryCommandBeforeDependencies(t *testing.T) {
 		{"recent"},
 		{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--text", "hello"},
 		{"search", "query"}, {"thread", "general", "1705312325.000100"},
-		{"users"}, {"whoami"},
+		{"users"}, {"whoami"}, {"write", "general", "--text", "hello"},
 	}
 	for _, args := range tests {
 		t.Run(args[0], func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
-			code, stdout, stderr := runIsolated(t, forbiddenDependencies(t), ctx, args...)
+			deps := forbiddenDependencies(t)
+			deps.LoadConfig = func() (config.Settings, error) {
+				t.Fatal("test reached the config seam before cancellation")
+				return config.Settings{}, nil
+			}
+			code, stdout, stderr := runIsolated(t, deps, ctx, args...)
 			if code != 130 || stdout != "" || stderr != "Operation interrupted.\n" {
 				t.Fatalf("result = code %d stdout %q stderr %q", code, stdout, stderr)
 			}

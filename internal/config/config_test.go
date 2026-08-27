@@ -7,19 +7,26 @@ import (
 	"testing"
 )
 
-func TestLoadFileAppliesNoticeSemantics(t *testing.T) {
+func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 	tests := []struct {
-		name    string
-		content *string
-		want    string
-		wantErr string
+		name       string
+		content    *string
+		wantPrefix string
+		wantDenied []Mutation
+		wantErr    string
 	}{
-		{name: "missing file", want: DefaultReplyPrefix},
-		{name: "missing key", content: stringPointer(`{}`), want: DefaultReplyPrefix},
-		{name: "override", content: stringPointer(`{"reply_prefix":"Reviewed by the operator."}`), want: "Reviewed by the operator."},
-		{name: "explicit empty disables", content: stringPointer(`{"reply_prefix":""}`), want: ""},
-		{name: "whitespace only rejected", content: stringPointer(`{"reply_prefix":"   "}`), wantErr: "must be empty or contain visible text"},
-		{name: "wrong type rejected", content: stringPointer(`{"reply_prefix":false}`), wantErr: "cannot unmarshal"},
+		{name: "missing file", wantPrefix: DefaultReplyPrefix},
+		{name: "missing keys", content: stringPointer(`{}`), wantPrefix: DefaultReplyPrefix},
+		{name: "prefix override", content: stringPointer(`{"reply_prefix":"Reviewed by the operator."}`), wantPrefix: "Reviewed by the operator."},
+		{name: "explicit empty prefix disables", content: stringPointer(`{"reply_prefix":""}`), wantPrefix: ""},
+		{name: "omitted deny list allows all", content: stringPointer(`{}`), wantPrefix: DefaultReplyPrefix},
+		{name: "empty deny list allows all", content: stringPointer(`{"deny_mutations":[]}`), wantPrefix: DefaultReplyPrefix},
+		{name: "explicit mutations denied", content: stringPointer(`{"deny_mutations":["reply","write"]}`), wantPrefix: DefaultReplyPrefix, wantDenied: []Mutation{MutationReply, MutationWrite}},
+		{name: "duplicate mutation deduplicated", content: stringPointer(`{"deny_mutations":["write","write"]}`), wantPrefix: DefaultReplyPrefix, wantDenied: []Mutation{MutationWrite}},
+		{name: "unknown mutation rejected", content: stringPointer(`{"deny_mutations":["delete"]}`), wantErr: "unknown command"},
+		{name: "wrong deny list type rejected", content: stringPointer(`{"deny_mutations":"write"}`), wantErr: "cannot unmarshal"},
+		{name: "whitespace only prefix rejected", content: stringPointer(`{"reply_prefix":"   "}`), wantErr: "must be empty or contain visible text"},
+		{name: "wrong prefix type rejected", content: stringPointer(`{"reply_prefix":false}`), wantErr: "cannot unmarshal"},
 		{name: "over-specific key rejected", content: stringPointer(`{"agent_assisted_prefix":"hello"}`), wantErr: "unknown field"},
 		{name: "multiple values rejected", content: stringPointer(`{} {}`), wantErr: "multiple JSON values"},
 	}
@@ -43,8 +50,17 @@ func TestLoadFileAppliesNoticeSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadFile() error = %v", err)
 			}
-			if settings.ReplyPrefix != test.want {
-				t.Fatalf("prefix = %q, want %q", settings.ReplyPrefix, test.want)
+			if settings.ReplyPrefix != test.wantPrefix {
+				t.Fatalf("prefix = %q, want %q", settings.ReplyPrefix, test.wantPrefix)
+			}
+			if len(settings.DeniedMutations) != len(test.wantDenied) {
+				t.Fatalf("denied mutations = %v, want %v", settings.DeniedMutations, test.wantDenied)
+			}
+			for _, mutation := range []Mutation{MutationReply, MutationWrite} {
+				wantDenied := containsMutation(test.wantDenied, mutation)
+				if got := settings.MutationDenied(mutation); got != wantDenied {
+					t.Fatalf("MutationDenied(%q) = %v, want %v", mutation, got, wantDenied)
+				}
 			}
 		})
 	}
@@ -72,3 +88,12 @@ func TestPathRejectsRelativeXDGConfigHome(t *testing.T) {
 }
 
 func stringPointer(value string) *string { return &value }
+
+func containsMutation(mutations []Mutation, target Mutation) bool {
+	for _, mutation := range mutations {
+		if mutation == target {
+			return true
+		}
+	}
+	return false
+}

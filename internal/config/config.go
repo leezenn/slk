@@ -13,18 +13,55 @@ import (
 )
 
 const (
-	// DefaultReplyPrefix is shown before replies unless configuration overrides it.
+	// DefaultReplyPrefix is shown before posted messages unless configuration overrides it.
 	DefaultReplyPrefix = ":mechanical_arm: agent assisted response."
 	maxPrefixRunes     = 3000
 )
 
+// Mutation identifies a Slack-writing command controlled by deny_mutations.
+type Mutation string
+
+const (
+	MutationReply Mutation = "reply"
+	MutationWrite Mutation = "write"
+)
+
+var knownMutations = map[Mutation]struct{}{
+	MutationReply: {},
+	MutationWrite: {},
+}
+
 // Settings contains effective slk configuration after defaults are applied.
 type Settings struct {
-	ReplyPrefix string
+	ReplyPrefix     string
+	DeniedMutations []Mutation
+}
+
+// Defaults returns effective settings when the optional config file is absent.
+func Defaults() Settings {
+	return Settings{ReplyPrefix: DefaultReplyPrefix}
+}
+
+// ParseMutation resolves a shipped Slack mutation command name.
+func ParseMutation(command string) (Mutation, bool) {
+	mutation := Mutation(command)
+	_, known := knownMutations[mutation]
+	return mutation, known
+}
+
+// MutationDenied reports whether one shipped Slack mutation is explicitly denied.
+func (s Settings) MutationDenied(mutation Mutation) bool {
+	for _, denied := range s.DeniedMutations {
+		if denied == mutation {
+			return true
+		}
+	}
+	return false
 }
 
 type fileSettings struct {
-	ReplyPrefix *string `json:"reply_prefix"`
+	ReplyPrefix     *string  `json:"reply_prefix"`
+	DeniedMutations []string `json:"deny_mutations"`
 }
 
 // Path returns the stable per-user configuration path.
@@ -53,7 +90,7 @@ func Load() (Settings, error) {
 
 // LoadFile reads one explicit configuration path. A missing file uses defaults.
 func LoadFile(path string) (Settings, error) {
-	settings := Settings{ReplyPrefix: DefaultReplyPrefix}
+	settings := Defaults()
 	contents, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return settings, nil
@@ -75,16 +112,28 @@ func LoadFile(path string) (Settings, error) {
 		return Settings{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 
-	if stored.ReplyPrefix == nil {
-		return settings, nil
+	if stored.ReplyPrefix != nil {
+		prefix := *stored.ReplyPrefix
+		if prefix != "" && strings.TrimSpace(prefix) == "" {
+			return Settings{}, fmt.Errorf("parsing %s: reply_prefix must be empty or contain visible text", path)
+		}
+		if utf8.RuneCountInString(prefix) > maxPrefixRunes {
+			return Settings{}, fmt.Errorf("parsing %s: reply_prefix exceeds %d characters", path, maxPrefixRunes)
+		}
+		settings.ReplyPrefix = prefix
 	}
-	prefix := *stored.ReplyPrefix
-	if prefix != "" && strings.TrimSpace(prefix) == "" {
-		return Settings{}, fmt.Errorf("parsing %s: reply_prefix must be empty or contain visible text", path)
+
+	seen := make(map[Mutation]struct{}, len(stored.DeniedMutations))
+	for _, raw := range stored.DeniedMutations {
+		mutation, known := ParseMutation(raw)
+		if !known {
+			return Settings{}, fmt.Errorf("parsing %s: deny_mutations contains unknown command %q", path, raw)
+		}
+		if _, duplicate := seen[mutation]; duplicate {
+			continue
+		}
+		seen[mutation] = struct{}{}
+		settings.DeniedMutations = append(settings.DeniedMutations, mutation)
 	}
-	if utf8.RuneCountInString(prefix) > maxPrefixRunes {
-		return Settings{}, fmt.Errorf("parsing %s: reply_prefix exceeds %d characters", path, maxPrefixRunes)
-	}
-	settings.ReplyPrefix = prefix
 	return settings, nil
 }

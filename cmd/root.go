@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -16,37 +18,21 @@ type rootOptions struct {
 	verbose bool
 }
 
-// NewRootCommand constructs a fresh command tree with invocation-local flags.
+// NewRootCommand constructs a fresh unrestricted command tree for embedding and tests.
 func NewRootCommand(deps Dependencies) *cobra.Command {
+	return newRootCommand(deps, config.Defaults())
+}
+
+func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command {
 	options := &rootOptions{}
 	root := &cobra.Command{
 		Version:       version,
 		Use:           "slk",
-		Short:         "Explore Slack context and reply to message threads",
+		Short:         rootShort(settings),
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Long: `Explore Slack activity, channels, DMs, threads, and files, and reply to message threads.
-
-Environment:
-  SLACK_TOKEN       Fallback token if keychain is not configured
-  XDG_CONFIG_HOME   Config root; defaults to ~/.config
-
-Configuration:
-  $XDG_CONFIG_HOME/slk/config.json`,
-		Example: `  slk auth xoxp-your-token-here
-  slk whoami
-  slk activity
-  slk activity @alex --since 8h
-  slk recent --type dm
-  slk channels --type dm
-  slk read general --limit 50
-  slk read @john --after 1d
-  slk thread general 1705312325.000100
-  slk search "deploy failed"
-  slk download F0123456789
-  slk reply '<slack-permalink>' --text 'We will ship the fix tomorrow.'
-
-Tip: quoting short fragments from results helps users verify your interpretation.`,
+		Long:          rootLong(settings),
+		Example:       rootExamples(settings),
 	}
 	root.PersistentFlags().BoolVar(&options.json, "json", false, "Output as JSON")
 	root.PersistentFlags().BoolVarP(&options.verbose, "verbose", "v", false, "Show progress and detailed output")
@@ -61,13 +47,83 @@ Tip: quoting short fragments from results helps users verify your interpretation
 		newOpenCommand(deps, options),
 		newReadCommand(deps, options),
 		newRecentCommand(deps, options),
-		newReplyCommand(deps, options),
 		newSearchCommand(deps, options),
 		newThreadCommand(deps, options),
 		newUsersCommand(deps, options),
 		newWhoamiCommand(deps, options),
 	)
+	if !settings.MutationDenied(config.MutationReply) {
+		root.AddCommand(newReplyCommand(deps, options, settings.ReplyPrefix))
+	}
+	if !settings.MutationDenied(config.MutationWrite) {
+		root.AddCommand(newWriteCommand(deps, options, settings.ReplyPrefix))
+	}
 	return root
+}
+
+func rootShort(settings config.Settings) string {
+	hasReply := !settings.MutationDenied(config.MutationReply)
+	hasWrite := !settings.MutationDenied(config.MutationWrite)
+	switch {
+	case hasReply && hasWrite:
+		return "Explore Slack context and post messages"
+	case hasReply:
+		return "Explore Slack context and reply to message threads"
+	case hasWrite:
+		return "Explore Slack context and write messages"
+	default:
+		return "Explore Slack context"
+	}
+}
+
+func rootLong(settings config.Settings) string {
+	description := "Explore Slack activity, channels, DMs, threads, and files"
+	hasReply := !settings.MutationDenied(config.MutationReply)
+	hasWrite := !settings.MutationDenied(config.MutationWrite)
+	switch {
+	case hasReply && hasWrite:
+		description += ", write top-level messages, and reply to message threads"
+	case hasReply:
+		description += ", and reply to message threads"
+	case hasWrite:
+		description += ", and write top-level messages"
+	default:
+		description += "."
+	}
+	if hasReply || hasWrite {
+		description += "."
+	}
+	return description + `
+
+Environment:
+  SLACK_TOKEN       Fallback token if keychain is not configured
+  XDG_CONFIG_HOME   Config root; defaults to ~/.config
+
+Configuration:
+  $XDG_CONFIG_HOME/slk/config.json`
+}
+
+func rootExamples(settings config.Settings) string {
+	examples := []string{
+		"  slk auth xoxp-your-token-here",
+		"  slk whoami",
+		"  slk activity",
+		"  slk activity @alex --since 8h",
+		"  slk recent --type dm",
+		"  slk channels --type dm",
+		"  slk read general --limit 50",
+		"  slk read @john --after 1d",
+		"  slk thread general 1705312325.000100",
+		`  slk search "deploy failed"`,
+		"  slk download F0123456789",
+	}
+	if !settings.MutationDenied(config.MutationWrite) {
+		examples = append(examples, "  slk write general --text 'The deployment is complete.'")
+	}
+	if !settings.MutationDenied(config.MutationReply) {
+		examples = append(examples, "  slk reply '<slack-permalink>' --text 'We will ship the fix tomorrow.'")
+	}
+	return strings.Join(examples, "\n") + "\n\nTip: quoting short fragments from results helps users verify your interpretation."
 }
 
 // Execute runs one fresh command tree and returns its process exit code.
@@ -76,15 +132,63 @@ func Execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 }
 
 func execute(deps Dependencies, ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
-	root := NewRootCommand(deps)
-	root.SetArgs(args)
-	root.SetIn(in)
-	root.SetOut(out)
-	root.SetErr(errOut)
+	if err := checkContext(ctx); err != nil {
+		root := configuredRoot(NewRootCommand(deps), args, in, out, errOut)
+		return renderError(err, root, args, errOut)
+	}
+	settings, err := deps.config()
+	if err != nil {
+		root := configuredRoot(NewRootCommand(deps), args, in, out, errOut)
+		return renderError(err, root, args, errOut)
+	}
+	root := configuredRoot(newRootCommand(deps, settings), args, in, out, errOut)
+	if mutation, denied := deniedMutationFromArgs(args, settings); denied {
+		return renderError(mutationDeniedError(mutation), root, args, errOut)
+	}
 	if err := root.ExecuteContext(ctx); err != nil {
 		return renderError(err, root, args, errOut)
 	}
 	return 0
+}
+
+func configuredRoot(root *cobra.Command, args []string, in io.Reader, out, errOut io.Writer) *cobra.Command {
+	root.SetArgs(args)
+	root.SetIn(in)
+	root.SetOut(out)
+	root.SetErr(errOut)
+	return root
+}
+
+func deniedMutationFromArgs(args []string, settings config.Settings) (config.Mutation, bool) {
+	mutation, known := config.ParseMutation(commandNameFromArgs(args))
+	return mutation, known && settings.MutationDenied(mutation)
+}
+
+func commandNameFromArgs(args []string) string {
+	first := ""
+	for _, arg := range args {
+		switch {
+		case arg == "--":
+			continue
+		case arg == "--json" || arg == "--verbose" || arg == "-v":
+			continue
+		case strings.HasPrefix(arg, "--json=") || strings.HasPrefix(arg, "--verbose=") || strings.HasPrefix(arg, "-v="):
+			continue
+		case strings.HasPrefix(arg, "-"):
+			if first == "" {
+				return ""
+			}
+			continue
+		case first == "help":
+			return arg
+		case first == "":
+			first = arg
+			if first != "help" {
+				return first
+			}
+		}
+	}
+	return first
 }
 
 type selfIdentifier interface {

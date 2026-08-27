@@ -53,7 +53,7 @@ func TestAuthTestUsesConfiguredContextAndReturnsScopes(t *testing.T) {
 	}
 }
 
-func TestPostReplyAndGetPermalink(t *testing.T) {
+func TestPostMessageReplyAndGetPermalink(t *testing.T) {
 	const (
 		channelID = "C12345678"
 		threadTs  = "1700000000.000001"
@@ -110,9 +110,14 @@ func TestPostReplyAndGetPermalink(t *testing.T) {
 		}, nil
 	})
 
-	posted, err := client.PostReply(channelID, threadTs, text, prefix)
+	posted, err := client.PostMessage(PostMessageRequest{
+		ChannelID: channelID,
+		ThreadTs:  threadTs,
+		Text:      text,
+		Prefix:    prefix,
+	})
 	if err != nil {
-		t.Fatalf("PostReply returned error: %v", err)
+		t.Fatalf("PostMessage returned error: %v", err)
 	}
 	if posted.Channel != channelID || posted.Ts != replyTs {
 		t.Fatalf("posted result = %#v", posted)
@@ -126,7 +131,7 @@ func TestPostReplyAndGetPermalink(t *testing.T) {
 	}
 }
 
-func TestPostReplyOmitsBlocksWhenPrefixIsEmpty(t *testing.T) {
+func TestPostMessageTopLevelOmitsThreadAndBlocksWhenPrefixIsEmpty(t *testing.T) {
 	client := NewClient("test-token")
 	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if err := req.ParseForm(); err != nil {
@@ -134,6 +139,9 @@ func TestPostReplyOmitsBlocksWhenPrefixIsEmpty(t *testing.T) {
 		}
 		if got := req.Form.Get("text"); got != "hello" {
 			t.Fatalf("post text = %q, want hello", got)
+		}
+		if _, present := req.Form["thread_ts"]; present {
+			t.Fatalf("top-level post unexpectedly included thread_ts: %q", req.Form.Get("thread_ts"))
 		}
 		if _, present := req.Form["blocks"]; present {
 			t.Fatalf("post unexpectedly included blocks: %q", req.Form.Get("blocks"))
@@ -146,14 +154,14 @@ func TestPostReplyOmitsBlocksWhenPrefixIsEmpty(t *testing.T) {
 		}, nil
 	})
 
-	if _, err := client.PostReply("C12345678", "1700000000.000001", "hello", ""); err != nil {
-		t.Fatalf("PostReply returned error: %v", err)
+	if _, err := client.PostMessage(PostMessageRequest{ChannelID: "C12345678", Text: "hello"}); err != nil {
+		t.Fatalf("PostMessage returned error: %v", err)
 	}
 }
 
 func TestReplyBlocksSplitLongTextWithoutDataLoss(t *testing.T) {
 	text := strings.Repeat("å", slackSectionTextLimit+1)
-	blocks := replyBlocks(text, "prefix")
+	blocks := messageBlocks(text, "prefix")
 	if len(blocks) != 3 {
 		t.Fatalf("block count = %d, want one context and two sections", len(blocks))
 	}
@@ -168,7 +176,7 @@ func TestReplyBlocksSplitLongTextWithoutDataLoss(t *testing.T) {
 	}
 }
 
-func TestPostReplyReturnsTypedSlackRejection(t *testing.T) {
+func TestPostMessageReturnsTypedSlackRejection(t *testing.T) {
 	client := NewClient("test-token")
 	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -179,10 +187,10 @@ func TestPostReplyReturnsTypedSlackRejection(t *testing.T) {
 		}, nil
 	})
 
-	_, err := client.PostReply("C12345678", "1700000000.000001", "hello", "prefix")
+	_, err := client.PostMessage(PostMessageRequest{ChannelID: "C12345678", Text: "hello", Prefix: "prefix"})
 	var methodErr *MethodError
 	if !errors.As(err, &methodErr) || methodErr.Code != "missing_scope" {
-		t.Fatalf("PostReply error = %v, want typed missing_scope", err)
+		t.Fatalf("PostMessage error = %v, want typed missing_scope", err)
 	}
 }
 

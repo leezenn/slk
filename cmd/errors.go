@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/leezenn/slk/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -103,6 +104,14 @@ func configLoadError(err error) error {
 
 func refusedError(message, action string) error {
 	return newCommandError(ErrorRefused, message, action)
+}
+
+func mutationDeniedError(mutation config.Mutation) error {
+	return newCommandError(
+		ErrorRefused,
+		fmt.Sprintf("Command 'slk %s' is disabled by configuration.", mutation),
+		fmt.Sprintf("Remove %q from deny_mutations in the slk config file, then retry.", mutation),
+	)
 }
 
 func internalError() error {

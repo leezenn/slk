@@ -689,6 +689,14 @@ func (c *Client) SearchMessages(query string, limit int) (*SearchResult, error) 
 	return &SearchResult{Messages: resp.Messages}, nil
 }
 
+// PostMessageRequest describes one top-level message or thread reply.
+type PostMessageRequest struct {
+	ChannelID string
+	ThreadTs  string
+	Text      string
+	Prefix    string
+}
+
 // PostMessageResult identifies a message Slack accepted.
 type PostMessageResult struct {
 	Channel string `json:"channel"`
@@ -708,21 +716,23 @@ type slackBlock struct {
 	Elements []slackTextObject `json:"elements,omitempty"`
 }
 
-// PostReply posts one message into an existing thread. A non-empty prefix is
-// rendered as a smaller context block before the regular message sections.
-func (c *Client) PostReply(channelID, threadTs, text, prefix string) (*PostMessageResult, error) {
+// PostMessage posts one message. A non-empty prefix is rendered as a smaller
+// context block before the regular message sections.
+func (c *Client) PostMessage(request PostMessageRequest) (*PostMessageResult, error) {
 	params := url.Values{
-		"channel":   {channelID},
-		"thread_ts": {threadTs},
-		"text":      {text},
+		"channel": {request.ChannelID},
+		"text":    {request.Text},
 	}
-	if prefix != "" {
-		blocks, err := json.Marshal(replyBlocks(text, prefix))
+	if request.ThreadTs != "" {
+		params.Set("thread_ts", request.ThreadTs)
+	}
+	if request.Prefix != "" {
+		blocks, err := json.Marshal(messageBlocks(request.Text, request.Prefix))
 		if err != nil {
 			return nil, fmt.Errorf("encoding chat.postMessage blocks: %w", err)
 		}
 		params.Set("blocks", string(blocks))
-		params.Set("text", prefix+"\n\n"+text)
+		params.Set("text", request.Prefix+"\n\n"+request.Text)
 	}
 
 	body, err := c.post("chat.postMessage", params)
@@ -739,7 +749,7 @@ func (c *Client) PostReply(channelID, threadTs, text, prefix string) (*PostMessa
 	return &result, nil
 }
 
-func replyBlocks(text, prefix string) []slackBlock {
+func messageBlocks(text, prefix string) []slackBlock {
 	sections := splitSlackSectionText(text)
 	blocks := make([]slackBlock, 0, len(sections)+1)
 	blocks = append(blocks, slackBlock{
