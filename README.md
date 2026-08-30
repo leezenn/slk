@@ -43,7 +43,7 @@ Activity combines messages authored by the person with searchable messages that 
 
 `slk write <channel-or-user> --text <message>` posts one new top-level message immediately. Targets may be channel names or IDs and existing DMs identified by `@handle`, Slack user ID, or DM channel ID. Confirm the exact target and text before invoking it. The command does not silently create a new DM.
 
-`slk reply <permalink> --text <message>` posts one reply immediately to the permalink's thread. Read the conversation and confirm the exact response before invoking it.
+`slk reply <permalink> --text <message>` posts one reply immediately to the permalink's thread. Add `--also-send-to-conversation` only for a reply important enough to surface in the main channel or DM timeline where Slack supports reply broadcast; the message remains in its thread. Read the conversation and confirm the exact response and broadcast choice before invoking it. JSON receipts expose `reply_broadcast_requested`, and plain output reports a conversation broadcast only as requested because `chat.postMessage` does not return an independent broadcast-confirmation field.
 
 `slk edit <permalink> --match <exact-fragment> --with <replacement>` changes one exact fragment in the semantic body of a self-authored message. The match must occur exactly once: zero matches fail as stale and multiple matches fail as ambiguous. `--with ''` explicitly removes the fragment. Existing slk prefixes and attachments are preserved; unsupported custom block layouts are refused. The command never prompts and fresh-reads the result before reporting success.
 
@@ -113,7 +113,7 @@ slk - Explore Slack activity, research workspace context, and post explicit mess
       Check `formatting_applied` in mutation JSON receipts before comparing submitted text with Slack read-back.
       If help says slk is disabled, ask the user for permission before running `slk config enable`.
       `slk write '<channel-or-user>' --text '<message>'` posts a top-level message immediately; confirm the exact target and text first.
-      `slk reply '<permalink>' --text '<message>'` posts immediately; confirm the exact reply first.
+      `slk reply '<permalink>' --text '<message>'` posts immediately; confirm the exact reply first. Add `--also-send-to-conversation` only after confirming that the threaded reply should also surface in the main channel or DM timeline.
       `slk edit '<permalink>' --match '<exact-fragment>' --with '<replacement>'` edits one unique fragment without prompting; confirm the exact target, match, and replacement first.
       `slk replace '<permalink>' --text '<complete-message>'` replaces the whole body immediately; confirm the exact target and complete replacement first.
       `slk delete '<permalink>' --yes` permanently deletes one self-authored message without prompting; obtain explicit user approval first.

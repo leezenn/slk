@@ -721,10 +721,11 @@ func (c *Client) SearchMessages(query string, limit int) (*SearchResult, error) 
 
 // PostMessageRequest describes one top-level message or thread reply.
 type PostMessageRequest struct {
-	ChannelID string
-	ThreadTs  string
-	Text      string
-	Prefix    string
+	ChannelID      string
+	ThreadTs       string
+	Text           string
+	Prefix         string
+	ReplyBroadcast bool
 }
 
 // UpdateMessageRequest replaces one message's complete body.
@@ -766,6 +767,9 @@ type slackBlock struct {
 // PostMessage posts one message. A non-empty prefix is rendered as a smaller
 // context block before the regular message sections.
 func (c *Client) PostMessage(request PostMessageRequest) (*PostMessageResult, error) {
+	if request.ReplyBroadcast && request.ThreadTs == "" {
+		return nil, fmt.Errorf("posting reply broadcast: thread timestamp is required")
+	}
 	text, blocks, err := encodeMessageContent(request.Text, request.Prefix)
 	if err != nil {
 		return nil, fmt.Errorf("encoding chat.postMessage blocks: %w", err)
@@ -776,6 +780,9 @@ func (c *Client) PostMessage(request PostMessageRequest) (*PostMessageResult, er
 	}
 	if request.ThreadTs != "" {
 		params.Set("thread_ts", request.ThreadTs)
+	}
+	if request.ReplyBroadcast {
+		params.Set("reply_broadcast", "true")
 	}
 	if blocks != "" {
 		params.Set("blocks", blocks)

@@ -18,8 +18,9 @@ const (
 )
 
 type messagePostTarget struct {
-	channelID string
-	threadTs  string
+	channelID      string
+	threadTs       string
+	replyBroadcast bool
 }
 
 type messagePostClient interface {
@@ -38,10 +39,11 @@ func runMessagePost(
 	formattingApplied []textformat.Module,
 ) error {
 	posted, err := client.PostMessage(api.PostMessageRequest{
-		ChannelID: target.channelID,
-		ThreadTs:  target.threadTs,
-		Text:      text,
-		Prefix:    prefix,
+		ChannelID:      target.channelID,
+		ThreadTs:       target.threadTs,
+		Text:           text,
+		Prefix:         prefix,
+		ReplyBroadcast: target.replyBroadcast,
 	})
 	if err != nil {
 		return messagePostError(err, mode)
@@ -65,6 +67,9 @@ func runMessagePost(
 		if target.threadTs != "" {
 			payload["thread_ts"] = target.threadTs
 		}
+		if mode == postModeReply {
+			payload["reply_broadcast_requested"] = target.replyBroadcast
+		}
 		out, err := format.FormatJSON(payload)
 		if err != nil {
 			return internalError()
@@ -74,6 +79,9 @@ func runMessagePost(
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "%s posted.\n", postReceiptLabel(mode))
+	if mode == postModeReply && target.replyBroadcast {
+		fmt.Fprintln(cmd.OutOrStdout(), "Conversation broadcast requested.")
+	}
 	writeFormattingNotice(cmd, formattingApplied)
 	if permalink != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), permalink)

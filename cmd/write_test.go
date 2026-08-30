@@ -142,6 +142,9 @@ func TestRunWriteResolvesExistingDMAndOmitsThreadFromJSON(t *testing.T) {
 	if strings.Contains(stdout.String(), `"thread_ts"`) {
 		t.Fatalf("top-level JSON receipt included thread_ts: %s", stdout.String())
 	}
+	if strings.Contains(stdout.String(), `"reply_broadcast_requested"`) {
+		t.Fatalf("top-level JSON receipt included reply broadcast state: %s", stdout.String())
+	}
 	for _, want := range []string{`"posted": true`, `"channel": "D12345678"`, `"formatting_applied": []`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())

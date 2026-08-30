@@ -77,6 +77,9 @@ func TestPostMessageReplyAndGetPermalink(t *testing.T) {
 			if got := req.Form.Get("thread_ts"); got != threadTs {
 				t.Fatalf("post thread_ts = %q, want %q", got, threadTs)
 			}
+			if _, present := req.Form["reply_broadcast"]; present {
+				t.Fatalf("ordinary reply unexpectedly included reply_broadcast: %q", req.Form.Get("reply_broadcast"))
+			}
 			if got, want := req.Form.Get("text"), prefix+"\n\n"+text; got != want {
 				t.Fatalf("post fallback text = %q, want %q", got, want)
 			}
@@ -128,6 +131,48 @@ func TestPostMessageReplyAndGetPermalink(t *testing.T) {
 	}
 	if gotPermalink != permalink {
 		t.Fatalf("permalink = %q, want %q", gotPermalink, permalink)
+	}
+}
+
+func TestPostMessageReplyBroadcastEncoding(t *testing.T) {
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := req.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Form.Get("thread_ts"); got != "1700000000.000001" {
+			t.Fatalf("thread_ts = %q", got)
+		}
+		if got := req.Form.Get("reply_broadcast"); got != "true" {
+			t.Fatalf("reply_broadcast = %q, want true", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"channel":"C12345678","ts":"1700000001.000002"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	_, err := client.PostMessage(PostMessageRequest{
+		ChannelID:      "C12345678",
+		ThreadTs:       "1700000000.000001",
+		Text:           "important reply",
+		ReplyBroadcast: true,
+	})
+	if err != nil {
+		t.Fatalf("PostMessage broadcast returned error: %v", err)
+	}
+}
+
+func TestPostMessageReplyBroadcastRequiresThread(t *testing.T) {
+	client := NewClient("test-token")
+	if _, err := client.PostMessage(PostMessageRequest{
+		ChannelID:      "C12345678",
+		Text:           "not a reply",
+		ReplyBroadcast: true,
+	}); err == nil || !strings.Contains(err.Error(), "thread timestamp is required") {
+		t.Fatalf("PostMessage broadcast error = %v", err)
 	}
 }
 
