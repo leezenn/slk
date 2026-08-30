@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/leezenn/slk/internal/textformat"
 )
 
 const (
@@ -43,6 +45,7 @@ type Settings struct {
 	Disabled        bool
 	MessagePrefix   string
 	DeniedMutations []Mutation
+	Formatting      []textformat.Module
 }
 
 // Document preserves explicit versus defaulted values for config mutations.
@@ -50,6 +53,7 @@ type Document struct {
 	Disabled        bool
 	MessagePrefix   *string
 	DeniedMutations []Mutation
+	Formatting      []textformat.Module
 }
 
 // Defaults returns effective settings when the optional config file is absent.
@@ -65,6 +69,7 @@ func (d Document) Effective() Settings {
 		settings.MessagePrefix = *d.MessagePrefix
 	}
 	settings.DeniedMutations = append([]Mutation(nil), d.DeniedMutations...)
+	settings.Formatting = append([]textformat.Module(nil), d.Formatting...)
 	return settings
 }
 
@@ -79,6 +84,16 @@ func ParseMutation(command string) (Mutation, bool) {
 func (s Settings) MutationDenied(mutation Mutation) bool {
 	for _, denied := range s.DeniedMutations {
 		if denied == mutation {
+			return true
+		}
+	}
+	return false
+}
+
+// FormattingEnabled reports whether one shipped formatting module is enabled.
+func (s Settings) FormattingEnabled(module textformat.Module) bool {
+	for _, enabled := range s.Formatting {
+		if enabled == module {
 			return true
 		}
 	}
@@ -102,6 +117,7 @@ type fileSettings struct {
 	Disabled        bool     `json:"disabled,omitempty"`
 	MessagePrefix   *string  `json:"message_prefix,omitempty"`
 	DeniedMutations []string `json:"deny_mutations,omitempty"`
+	Formatting      []string `json:"formatting,omitempty"`
 }
 
 // Path returns the stable per-user configuration path.
@@ -183,6 +199,13 @@ func LoadDocumentFile(path string) (Document, error) {
 		}
 		document.DeniedMutations = append(document.DeniedMutations, mutation)
 	}
+	for _, raw := range stored.Formatting {
+		module, known := textformat.ParseModule(raw)
+		if !known {
+			return Document{}, fmt.Errorf("parsing %s: formatting contains unknown module %q", path, raw)
+		}
+		document.Formatting = append(document.Formatting, module)
+	}
 	if err := validateDocument(&document); err != nil {
 		return Document{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
@@ -200,21 +223,27 @@ func (fileStore) Save(document Document) error {
 // SaveFile validates and atomically writes one explicit configuration path.
 func SaveFile(path string, document Document) error {
 	document.DeniedMutations = append([]Mutation(nil), document.DeniedMutations...)
+	document.Formatting = append([]textformat.Module(nil), document.Formatting...)
 	if err := validateDocument(&document); err != nil {
 		return err
 	}
 
 	stored := struct {
-		Disabled        bool       `json:"disabled,omitempty"`
-		MessagePrefix   *string    `json:"message_prefix,omitempty"`
-		DeniedMutations []Mutation `json:"deny_mutations,omitempty"`
+		Disabled        bool                `json:"disabled,omitempty"`
+		MessagePrefix   *string             `json:"message_prefix,omitempty"`
+		DeniedMutations []Mutation          `json:"deny_mutations,omitempty"`
+		Formatting      []textformat.Module `json:"formatting,omitempty"`
 	}{
 		Disabled:        document.Disabled,
 		MessagePrefix:   document.MessagePrefix,
 		DeniedMutations: append([]Mutation(nil), document.DeniedMutations...),
+		Formatting:      append([]textformat.Module(nil), document.Formatting...),
 	}
 	sort.Slice(stored.DeniedMutations, func(i, j int) bool {
 		return stored.DeniedMutations[i] < stored.DeniedMutations[j]
+	})
+	sort.Slice(stored.Formatting, func(i, j int) bool {
+		return stored.Formatting[i] < stored.Formatting[j]
 	})
 	contents, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
@@ -278,5 +307,19 @@ func validateDocument(document *Document) error {
 		unique = append(unique, mutation)
 	}
 	document.DeniedMutations = unique
+
+	seenFormatting := make(map[textformat.Module]struct{}, len(document.Formatting))
+	uniqueFormatting := document.Formatting[:0]
+	for _, module := range document.Formatting {
+		if _, known := textformat.ParseModule(string(module)); !known {
+			return fmt.Errorf("formatting contains unknown module %q", module)
+		}
+		if _, duplicate := seenFormatting[module]; duplicate {
+			continue
+		}
+		seenFormatting[module] = struct{}{}
+		uniqueFormatting = append(uniqueFormatting, module)
+	}
+	document.Formatting = uniqueFormatting
 	return nil
 }

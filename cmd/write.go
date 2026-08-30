@@ -3,6 +3,7 @@ package cmd
 import (
 	"strings"
 
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +16,7 @@ type writeClient interface {
 	targetResolver
 }
 
-func newWriteCommand(deps Dependencies, rootOptions *rootOptions, prefix string) *cobra.Command {
+func newWriteCommand(deps Dependencies, rootOptions *rootOptions, prefix string, formatting ...textformat.Module) *cobra.Command {
 	options := &writeOptions{}
 	command := &cobra.Command{
 		Use:   "write <channel-or-user>",
@@ -26,7 +27,7 @@ The target may be a channel name or ID, an existing DM handle such as @alex,
 a Slack user ID, or a DM channel ID. The command posts immediately. Confirm the
 exact target and text before invoking it. Messages include the configured message
 prefix as a small context line unless message_prefix is explicitly empty. Slack
-must grant the current user token chat:write.`,
+must grant the current user token chat:write.` + formattingHelp(formatting, "The --text value"),
 		Example: `  slk write general --text 'The deployment is complete.'
   slk write @alex --text 'Could you review the latest draft?'`,
 		Args: argumentValidator(cobra.ExactArgs(1)),
@@ -46,17 +47,18 @@ must grant the current user token chat:write.`,
 		if err != nil {
 			return err
 		}
-		return runWrite(cmd, rootOptions, client, args[0], options.text, prefix)
+		return runWrite(cmd, rootOptions, client, args[0], options.text, prefix, formatting...)
 	}
 	return command
 }
 
-func runWrite(cmd *cobra.Command, rootOptions *rootOptions, client writeClient, target, text, prefix string) error {
+func runWrite(cmd *cobra.Command, rootOptions *rootOptions, client writeClient, target, text, prefix string, modules ...textformat.Module) error {
 	channelID, _, err := resolveTarget(client, target)
 	if err != nil {
 		return slackAPIError(err)
 	}
+	formatted := textformat.Apply(text, modules)
 	return runMessagePost(cmd, rootOptions, client, messagePostTarget{
 		channelID: channelID,
-	}, text, prefix, postModeWrite)
+	}, formatted.Text, prefix, postModeWrite, formatted.Applied)
 }

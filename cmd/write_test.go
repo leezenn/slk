@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -93,6 +94,35 @@ func TestRunWritePostsTopLevelMessageAndReturnsReceipt(t *testing.T) {
 	}
 }
 
+func TestRunWriteAppliesEnabledFormattingAndDisclosesIt(t *testing.T) {
+	client := &fakeWriteClient{
+		posted:    &api.PostMessageResult{Channel: "C12345678", Ts: "1700000001.000002"},
+		permalink: "https://example.slack.com/archives/C12345678/p1700000001000002",
+		channel:   &api.Channel{ID: "C12345678", Name: "general"},
+	}
+	var stdout bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&stdout)
+
+	if err := runWrite(
+		command,
+		&rootOptions{},
+		client,
+		"general",
+		"em-dashes—kinda weird",
+		"prefix",
+		textformat.ModuleEmDashToSpacedHyphen,
+	); err != nil {
+		t.Fatalf("runWrite returned error: %v", err)
+	}
+	if client.request.Text != "em-dashes - kinda weird" {
+		t.Fatalf("formatted request text = %q", client.request.Text)
+	}
+	if !strings.Contains(stdout.String(), "Formatting applied: em-dash-to-spaced-hyphen.") {
+		t.Fatalf("receipt omitted formatting disclosure: %q", stdout.String())
+	}
+}
+
 func TestRunWriteResolvesExistingDMAndOmitsThreadFromJSON(t *testing.T) {
 	client := &fakeWriteClient{
 		posted:    &api.PostMessageResult{Channel: "D12345678", Ts: "1700000001.000002"},
@@ -112,7 +142,7 @@ func TestRunWriteResolvesExistingDMAndOmitsThreadFromJSON(t *testing.T) {
 	if strings.Contains(stdout.String(), `"thread_ts"`) {
 		t.Fatalf("top-level JSON receipt included thread_ts: %s", stdout.String())
 	}
-	for _, want := range []string{`"posted": true`, `"channel": "D12345678"`} {
+	for _, want := range []string{`"posted": true`, `"channel": "D12345678"`, `"formatting_applied": []`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())
 		}

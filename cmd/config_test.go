@@ -9,6 +9,7 @@ import (
 
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
+	"github.com/leezenn/slk/internal/textformat"
 )
 
 func runIsolatedWithInput(t *testing.T, deps Dependencies, input string, args ...string) (int, string, string) {
@@ -42,6 +43,7 @@ func TestConfigSummaryIsReadOnlyAndSecretSafe(t *testing.T) {
 		"Tool: enabled",
 		"Authentication: configured (keychain, xoxp-sec...)",
 		`Message prefix (custom): "Reviewed by operator."`,
+		"Enabled formatting: none",
 		"Denied mutations: write",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -72,7 +74,7 @@ func TestConfigSummaryJSONOmitsTokenMaterial(t *testing.T) {
 }
 
 func TestEveryConfigSubcommandHelpIsIsolated(t *testing.T) {
-	for _, name := range []string{"allow", "deny", "disable", "disconnect", "enable", "path", "reset", "set", "setup"} {
+	for _, name := range []string{"allow", "deny", "disable", "disconnect", "enable", "formatting", "path", "reset", "set", "setup"} {
 		t.Run(name, func(t *testing.T) {
 			code, stdout, stderr := runIsolated(t, forbiddenDependencies(t), context.Background(), "config", name, "--help")
 			if code != 0 || stderr != "" || !strings.Contains(stdout, "Usage:") {
@@ -112,6 +114,70 @@ func TestConfigMessagePrefixSetEmptyAndReset(t *testing.T) {
 	}
 	if configuration.saveCalls != 3 {
 		t.Fatalf("config save calls = %d, want 3", configuration.saveCalls)
+	}
+}
+
+func TestConfigFormattingEnableDisableAndStatus(t *testing.T) {
+	configuration := &fakeConfigStore{}
+	deps := isolatedDependencies(&fakeCredentialStore{})
+	deps.Configuration = configuration
+
+	code, stdout, stderr := runIsolated(t, deps, context.Background(), "config", "formatting")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "Enabled formatting: none") ||
+		!strings.Contains(stdout, "Available formatting: em-dash-to-spaced-hyphen") {
+		t.Fatalf("formatting status = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = runIsolated(t, deps, context.Background(), "--json", "config", "formatting", "enable", "em-dash-to-spaced-hyphen")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"formatting": [`) ||
+		!strings.Contains(stdout, `"em-dash-to-spaced-hyphen"`) ||
+		!configuration.document.Effective().FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen) {
+		t.Fatalf("enable formatting = code %d stdout %q stderr %q document %#v", code, stdout, stderr, configuration.document)
+	}
+
+	code, stdout, stderr = runIsolated(t, deps, context.Background(), "--json", "config")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"formatting": [`) || !strings.Contains(stdout, `"em-dash-to-spaced-hyphen"`) {
+		t.Fatalf("config JSON formatting = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runIsolated(t, deps, context.Background(), "--help")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "Enabled modules: em-dash-to-spaced-hyphen") ||
+		!strings.Contains(stdout, "receipts report") {
+		t.Fatalf("formatted root help = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	for _, helpTest := range []struct {
+		command string
+		subject string
+		extra   string
+	}{
+		{command: "write", subject: "The --text value is transformed"},
+		{command: "reply", subject: "The --text value is transformed"},
+		{command: "replace", subject: "The --text value is transformed"},
+		{command: "edit", subject: "The --with value is transformed", extra: "Formatting never changes --match"},
+	} {
+		code, stdout, stderr = runIsolated(t, deps, context.Background(), helpTest.command, "--help")
+		if code != 0 || stderr != "" || !strings.Contains(stdout, "Formatting enabled: em-dash-to-spaced-hyphen") ||
+			!strings.Contains(stdout, helpTest.subject) || (helpTest.extra != "" && !strings.Contains(stdout, helpTest.extra)) {
+			t.Fatalf("formatted %s help = code %d stdout %q stderr %q", helpTest.command, code, stdout, stderr)
+		}
+	}
+
+	code, _, stderr = runIsolated(t, deps, context.Background(), "config", "formatting", "disable", "em-dash-to-spaced-hyphen")
+	if code != 0 || stderr != "" || len(configuration.document.Formatting) != 0 {
+		t.Fatalf("disable formatting = code %d stderr %q document %#v", code, stderr, configuration.document)
+	}
+	if configuration.saveCalls != 2 {
+		t.Fatalf("formatting save calls = %d, want 2", configuration.saveCalls)
+	}
+}
+
+func TestConfigFormattingRejectsUnknownModuleWithoutSaving(t *testing.T) {
+	configuration := &fakeConfigStore{}
+	deps := isolatedDependencies(&fakeCredentialStore{})
+	deps.Configuration = configuration
+
+	code, stdout, stderr := runIsolated(t, deps, context.Background(), "config", "formatting", "enable", "unknown")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "unknown formatting module") || configuration.saveCalls != 0 {
+		t.Fatalf("unknown formatting = code %d stdout %q stderr %q saves %d", code, stdout, stderr, configuration.saveCalls)
 	}
 }
 
@@ -248,7 +314,7 @@ func TestConfigSetupChangesPreferencesThroughOneInputReader(t *testing.T) {
 	deps := isolatedDependencies(credentials)
 	deps.Configuration = configuration
 
-	input := "y\ny\nCustom context\nn\n\n\n\nn\n"
+	input := "y\ny\nCustom context\nn\nn\n\n\n\nn\n"
 	code, stdout, stderr := runIsolatedWithInput(t, deps, input, "config", "setup")
 	if code != 0 || stderr != "" {
 		t.Fatalf("setup = code %d stdout %q stderr %q", code, stdout, stderr)
@@ -257,6 +323,9 @@ func TestConfigSetupChangesPreferencesThroughOneInputReader(t *testing.T) {
 		t.Fatalf("setup prefix = %#v", configuration.document.MessagePrefix)
 	}
 	settings := configuration.document.Effective()
+	if len(settings.Formatting) != 0 {
+		t.Fatalf("setup unexpectedly enabled formatting = %v", settings.Formatting)
+	}
 	if !settings.MutationDenied(config.MutationReply) ||
 		settings.MutationDenied(config.MutationWrite) ||
 		settings.MutationDenied(config.MutationEdit) ||

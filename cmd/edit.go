@@ -8,6 +8,7 @@ import (
 
 	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/format"
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -39,7 +40,7 @@ type editableText struct {
 	Verbatim *bool  `json:"verbatim,omitempty"`
 }
 
-func newEditCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
+func newEditCommand(deps Dependencies, rootOptions *rootOptions, formatting ...textformat.Module) *cobra.Command {
 	options := &editOptions{}
 	command := &cobra.Command{
 		Use:   "edit <slack-permalink>",
@@ -59,14 +60,16 @@ block layouts are refused.
 
 JSON success contract (--json):
   {"ok":true,"edited":true,"operation":"replace_exact",
-   "target_permalink":"...","open_command":"..."}
+   "target_permalink":"...","open_command":"...","formatting_applied":[]}
 
 Contract drift:
 If this JSON contract differs or a normally supported message is refused, stop.
 Do not strip blocks, reconstruct the message, or automatically use 'slk replace'.
 For a refusal, rerun with --verbose. Inform the human or file an issue with the slk
 version and sanitized structural detail. Never include message text, private
-permalinks, or credentials in public reports.`,
+permalinks, or credentials in public reports.
+
+Formatting never changes --match.` + formattingHelp(formatting, "The --with value"),
 		Example: `  slk edit '<slack-permalink>' --match 'deploy tomorow' --with 'deploy tomorrow'
   slk edit '<slack-permalink>' --match 'obsolete sentence' --with ''`,
 		Args: argumentValidator(cobra.ExactArgs(1)),
@@ -91,12 +94,12 @@ permalinks, or credentials in public reports.`,
 		if err != nil {
 			return err
 		}
-		return runEdit(cmd, rootOptions, client, target, options.match, options.replacement)
+		return runEdit(cmd, rootOptions, client, target, options.match, options.replacement, formatting...)
 	}
 	return command
 }
 
-func runEdit(cmd *cobra.Command, rootOptions *rootOptions, client editClient, target messageMutationTarget, match, replacement string) error {
+func runEdit(cmd *cobra.Command, rootOptions *rootOptions, client editClient, target messageMutationTarget, match, replacement string, modules ...textformat.Module) error {
 	message, err := ownedMessageForMutation(client, target, mutationKindEdit)
 	if err != nil {
 		return err
@@ -125,7 +128,15 @@ func runEdit(cmd *cobra.Command, rootOptions *rootOptions, client editClient, ta
 		)
 	}
 
-	patched := strings.Replace(content.body, match, replacement, 1)
+	matchStart := strings.Index(content.body, match)
+	formattedEdit := textformat.ApplyEdit(
+		content.body,
+		matchStart,
+		matchStart+len(match),
+		replacement,
+		modules,
+	)
+	patched := formattedEdit.Text
 	if patched == content.body {
 		return newCommandError(
 			ErrorConflict,
@@ -153,14 +164,16 @@ func runEdit(cmd *cobra.Command, rootOptions *rootOptions, client editClient, ta
 
 	if rootOptions.json {
 		return writeJSON(cmd, map[string]interface{}{
-			"ok":               true,
-			"edited":           true,
-			"operation":        "replace_exact",
-			"target_permalink": target.permalink,
-			"open_command":     format.OpenCommand(target.permalink),
+			"ok":                 true,
+			"edited":             true,
+			"operation":          "replace_exact",
+			"target_permalink":   target.permalink,
+			"open_command":       format.OpenCommand(target.permalink),
+			"formatting_applied": formattingReceipt(formattedEdit.Applied),
 		})
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Message edited.")
+	writeFormattingNotice(cmd, formattedEdit.Applied)
 	fmt.Fprintln(cmd.OutOrStdout(), target.permalink)
 	fmt.Fprintf(cmd.OutOrStdout(), "Open: %s\n", format.OpenCommand(target.permalink))
 	return nil

@@ -6,6 +6,7 @@ import (
 
 	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/format"
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -34,6 +35,7 @@ func runMessagePost(
 	text string,
 	prefix string,
 	mode messagePostMode,
+	formattingApplied []textformat.Module,
 ) error {
 	posted, err := client.PostMessage(api.PostMessageRequest{
 		ChannelID: target.channelID,
@@ -52,12 +54,13 @@ func runMessagePost(
 
 	if rootOptions.json {
 		payload := map[string]interface{}{
-			"ok":           true,
-			"posted":       true,
-			"channel":      posted.Channel,
-			"ts":           posted.Ts,
-			"permalink":    permalink,
-			"open_command": format.OpenCommand(permalink),
+			"ok":                 true,
+			"posted":             true,
+			"channel":            posted.Channel,
+			"ts":                 posted.Ts,
+			"permalink":          permalink,
+			"open_command":       format.OpenCommand(permalink),
+			"formatting_applied": formattingReceipt(formattingApplied),
 		}
 		if target.threadTs != "" {
 			payload["thread_ts"] = target.threadTs
@@ -71,6 +74,7 @@ func runMessagePost(
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "%s posted.\n", postReceiptLabel(mode))
+	writeFormattingNotice(cmd, formattingApplied)
 	if permalink != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), permalink)
 		fmt.Fprintf(cmd.OutOrStdout(), "Open: %s\n", format.OpenCommand(permalink))

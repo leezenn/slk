@@ -6,16 +6,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/leezenn/slk/internal/textformat"
 )
 
 func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 	tests := []struct {
-		name       string
-		content    *string
-		wantPrefix string
-		wantOff    bool
-		wantDenied []Mutation
-		wantErr    string
+		name           string
+		content        *string
+		wantPrefix     string
+		wantOff        bool
+		wantDenied     []Mutation
+		wantFormatting []textformat.Module
+		wantErr        string
 	}{
 		{name: "missing file", wantPrefix: DefaultMessagePrefix},
 		{name: "missing keys", content: stringPointer(`{}`), wantPrefix: DefaultMessagePrefix},
@@ -26,6 +29,10 @@ func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 		{name: "empty deny list allows all", content: stringPointer(`{"deny_mutations":[]}`), wantPrefix: DefaultMessagePrefix},
 		{name: "explicit mutations denied", content: stringPointer(`{"deny_mutations":["delete","edit","replace","reply","write"]}`), wantPrefix: DefaultMessagePrefix, wantDenied: []Mutation{MutationDelete, MutationEdit, MutationReplace, MutationReply, MutationWrite}},
 		{name: "duplicate mutation deduplicated", content: stringPointer(`{"deny_mutations":["write","write"]}`), wantPrefix: DefaultMessagePrefix, wantDenied: []Mutation{MutationWrite}},
+		{name: "formatting explicitly enabled", content: stringPointer(`{"formatting":["em-dash-to-spaced-hyphen"]}`), wantPrefix: DefaultMessagePrefix, wantFormatting: []textformat.Module{textformat.ModuleEmDashToSpacedHyphen}},
+		{name: "duplicate formatting deduplicated", content: stringPointer(`{"formatting":["em-dash-to-spaced-hyphen","em-dash-to-spaced-hyphen"]}`), wantPrefix: DefaultMessagePrefix, wantFormatting: []textformat.Module{textformat.ModuleEmDashToSpacedHyphen}},
+		{name: "unknown formatting rejected", content: stringPointer(`{"formatting":["unknown"]}`), wantErr: "unknown module"},
+		{name: "wrong formatting type rejected", content: stringPointer(`{"formatting":"em-dash-to-spaced-hyphen"}`), wantErr: "cannot unmarshal"},
 		{name: "unknown mutation rejected", content: stringPointer(`{"deny_mutations":["unknown"]}`), wantErr: "unknown command"},
 		{name: "wrong deny list type rejected", content: stringPointer(`{"deny_mutations":"write"}`), wantErr: "cannot unmarshal"},
 		{name: "whitespace only prefix rejected", content: stringPointer(`{"message_prefix":"   "}`), wantErr: "must be empty or contain visible text"},
@@ -65,6 +72,10 @@ func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 					t.Fatalf("MutationDenied(%q) = %v, want %v", mutation, got, wantDenied)
 				}
 			}
+			wantFormatting := containsFormatting(test.wantFormatting, textformat.ModuleEmDashToSpacedHyphen)
+			if got := settings.FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen); got != wantFormatting {
+				t.Fatalf("FormattingEnabled() = %v, want %v", got, wantFormatting)
+			}
 		})
 	}
 }
@@ -99,6 +110,7 @@ func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 		Disabled:        true,
 		MessagePrefix:   &prefix,
 		DeniedMutations: []Mutation{MutationWrite, MutationDelete, MutationReply, MutationEdit, MutationReplace, MutationWrite},
+		Formatting:      []textformat.Module{textformat.ModuleEmDashToSpacedHyphen, textformat.ModuleEmDashToSpacedHyphen},
 	}
 	if err := SaveFile(path, document); err != nil {
 		t.Fatalf("SaveFile() error = %v", err)
@@ -116,9 +128,10 @@ func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stored struct {
-		Disabled        bool       `json:"disabled"`
-		MessagePrefix   string     `json:"message_prefix"`
-		DeniedMutations []Mutation `json:"deny_mutations"`
+		Disabled        bool                `json:"disabled"`
+		MessagePrefix   string              `json:"message_prefix"`
+		DeniedMutations []Mutation          `json:"deny_mutations"`
+		Formatting      []textformat.Module `json:"formatting"`
 	}
 	if err := json.Unmarshal(contents, &stored); err != nil {
 		t.Fatal(err)
@@ -135,6 +148,10 @@ func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 			t.Fatalf("stored denied mutations = %v, want %v", stored.DeniedMutations, wantDenied)
 		}
 	}
+	wantFormatting := []textformat.Module{textformat.ModuleEmDashToSpacedHyphen}
+	if !equalFormatting(stored.Formatting, wantFormatting) {
+		t.Fatalf("stored formatting = %v, want %v", stored.Formatting, wantFormatting)
+	}
 
 	loaded, err := LoadFile(path)
 	if err != nil {
@@ -147,6 +164,9 @@ func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 		if !loaded.MutationDenied(mutation) {
 			t.Fatalf("loaded settings allow %q: %#v", mutation, loaded)
 		}
+	}
+	if !loaded.FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen) {
+		t.Fatalf("loaded settings omitted formatting: %#v", loaded)
 	}
 }
 
@@ -161,6 +181,9 @@ func TestSaveFileOmitsResetPrefix(t *testing.T) {
 	}
 	if strings.Contains(string(contents), "message_prefix") {
 		t.Fatalf("reset config persisted message_prefix: %s", contents)
+	}
+	if strings.Contains(string(contents), "formatting") {
+		t.Fatalf("default config persisted formatting: %s", contents)
 	}
 }
 
@@ -194,4 +217,25 @@ func containsMutation(mutations []Mutation, target Mutation) bool {
 		}
 	}
 	return false
+}
+
+func containsFormatting(modules []textformat.Module, target textformat.Module) bool {
+	for _, module := range modules {
+		if module == target {
+			return true
+		}
+	}
+	return false
+}
+
+func equalFormatting(left, right []textformat.Module) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -32,6 +33,7 @@ keeps existing credentials unless --reconnect is supplied.`,
 		newConfigResetCommand(deps, rootOptions),
 		newConfigDenyCommand(deps, rootOptions),
 		newConfigAllowCommand(deps, rootOptions),
+		newConfigFormattingCommand(deps, rootOptions),
 		newConfigSetupCommand(deps, rootOptions),
 		newConfigDisconnectCommand(deps, rootOptions),
 		newConfigDisableCommand(deps, rootOptions),
@@ -153,6 +155,78 @@ func newMutationPolicyCommand(deps Dependencies, rootOptions *rootOptions, deny 
 	}
 }
 
+func newConfigFormattingCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
+	command := &cobra.Command{
+		Use:   "formatting",
+		Short: "Inspect or change opt-in text formatting",
+		Long: `Inspect or explicitly enable named formatting modules.
+
+Formatting is disabled by default so submitted model text remains exact. The
+em-dash-to-spaced-hyphen module changes surrounding horizontal whitespace plus
+an em dash into one spaced ASCII hyphen. It applies only to submitted write,
+reply, and replacement text and to the --with fragment of edit.`,
+		Args: argumentValidator(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			document, _, _, err := loadConfigDocument(deps)
+			if err != nil {
+				return err
+			}
+			return writeFormattingStatus(cmd, rootOptions, document.Effective())
+		},
+	}
+	command.AddCommand(
+		newFormattingPolicyCommand(deps, rootOptions, true),
+		newFormattingPolicyCommand(deps, rootOptions, false),
+	)
+	return command
+}
+
+func newFormattingPolicyCommand(deps Dependencies, rootOptions *rootOptions, enable bool) *cobra.Command {
+	verb := "disable"
+	short := "Disable one formatting module"
+	if enable {
+		verb = "enable"
+		short = "Enable one formatting module"
+	}
+	return &cobra.Command{
+		Use:   verb + " <em-dash-to-spaced-hyphen>",
+		Short: short,
+		Args:  argumentValidator(cobra.ExactArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			module, known := textformat.ParseModule(args[0])
+			if !known {
+				return invalidArgument(cmd, "unknown formatting module "+args[0])
+			}
+			document, store, path, err := loadConfigDocument(deps)
+			if err != nil {
+				return err
+			}
+			setFormattingEnabled(&document, module, enable)
+			if err := saveConfigDocument(store, document); err != nil {
+				return err
+			}
+			action := fmt.Sprintf("formatting module %s disabled", module)
+			if enable {
+				action = fmt.Sprintf("formatting module %s enabled", module)
+			}
+			return writeConfigReceipt(cmd, rootOptions, action, path, document.Effective())
+		},
+	}
+}
+
+func writeFormattingStatus(cmd *cobra.Command, rootOptions *rootOptions, settings config.Settings) error {
+	if rootOptions.json {
+		return writeJSON(cmd, map[string]interface{}{
+			"ok":         true,
+			"formatting": formattingStrings(settings.Formatting),
+			"available":  []string{string(textformat.ModuleEmDashToSpacedHyphen)},
+		})
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Enabled formatting: %s\n", textformat.List(settings.Formatting))
+	fmt.Fprintf(cmd.OutOrStdout(), "Available formatting: %s\n", textformat.ModuleEmDashToSpacedHyphen)
+	return nil
+}
+
 func newConfigDisconnectCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "disconnect",
@@ -253,6 +327,7 @@ func runConfigSummary(cmd *cobra.Command, deps Dependencies, rootOptions *rootOp
 			"message_prefix":        settings.MessagePrefix,
 			"message_prefix_source": prefixSource(document),
 			"deny_mutations":        mutationStrings(settings.DeniedMutations),
+			"formatting":            formattingStrings(settings.Formatting),
 			"auth_configured":       configured,
 			"auth_ignored":          configured && settings.Disabled,
 		}
@@ -277,6 +352,7 @@ func runConfigSummary(cmd *cobra.Command, deps Dependencies, rootOptions *rootOp
 		fmt.Fprintln(cmd.OutOrStdout(), "Authentication: not configured")
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Message prefix (%s): %q\n", prefixSource(document), settings.MessagePrefix)
+	fmt.Fprintf(cmd.OutOrStdout(), "Enabled formatting: %s\n", textformat.List(settings.Formatting))
 	fmt.Fprintf(cmd.OutOrStdout(), "Denied mutations: %s\n", mutationList(settings.DeniedMutations))
 	if settings.Disabled {
 		fmt.Fprintln(cmd.OutOrStdout(), "Agent guidance: ask the user for permission before running 'slk config enable'.")
@@ -320,6 +396,19 @@ func setMutationDenied(document *config.Document, mutation config.Mutation, deni
 	}
 }
 
+func setFormattingEnabled(document *config.Document, module textformat.Module, enabled bool) {
+	filtered := document.Formatting[:0]
+	for _, existing := range document.Formatting {
+		if existing != module {
+			filtered = append(filtered, existing)
+		}
+	}
+	document.Formatting = filtered
+	if enabled {
+		document.Formatting = append(document.Formatting, module)
+	}
+}
+
 func writeConfigReceipt(cmd *cobra.Command, rootOptions *rootOptions, action, path string, settings config.Settings) error {
 	if rootOptions.json {
 		return writeJSON(cmd, map[string]interface{}{
@@ -329,6 +418,7 @@ func writeConfigReceipt(cmd *cobra.Command, rootOptions *rootOptions, action, pa
 			"disabled":       settings.Disabled,
 			"message_prefix": settings.MessagePrefix,
 			"deny_mutations": mutationStrings(settings.DeniedMutations),
+			"formatting":     formattingStrings(settings.Formatting),
 		})
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s.\n", strings.ToUpper(action[:1])+action[1:])
@@ -361,4 +451,10 @@ func mutationList(mutations []config.Mutation) string {
 		return "none"
 	}
 	return strings.Join(values, ", ")
+}
+
+func formattingStrings(modules []textformat.Module) []string {
+	values := textformat.Names(modules)
+	sort.Strings(values)
+	return values
 }

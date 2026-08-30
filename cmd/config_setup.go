@@ -6,6 +6,7 @@ import (
 
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -66,6 +67,7 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 		fmt.Fprintln(cmd.OutOrStdout(), "Tool: enabled")
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Message prefix (%s): %q\n", prefixSource(document), settings.MessagePrefix)
+	fmt.Fprintf(cmd.OutOrStdout(), "Enabled formatting: %s\n", textformat.List(settings.Formatting))
 	fmt.Fprintf(cmd.OutOrStdout(), "Denied mutations: %s\n", mutationList(settings.DeniedMutations))
 
 	change, err := promptYesNo(cmd, reader, "Change preferences?", false)
@@ -89,6 +91,17 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 		}
 		document.MessagePrefix = &prefix
 	}
+
+	formatEmDashes, err := promptYesNo(
+		cmd,
+		reader,
+		"Enable em-dash-to-spaced-hyphen formatting?",
+		settings.FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen),
+	)
+	if err != nil {
+		return err
+	}
+	setFormattingEnabled(&document, textformat.ModuleEmDashToSpacedHyphen, formatEmDashes)
 
 	allowReply, err := promptYesNo(cmd, reader, "Allow thread replies?", !settings.MutationDenied(config.MutationReply))
 	if err != nil {

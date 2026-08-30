@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +20,7 @@ type replyTarget struct {
 	threadTs  string
 }
 
-func newReplyCommand(deps Dependencies, rootOptions *rootOptions, prefix string) *cobra.Command {
+func newReplyCommand(deps Dependencies, rootOptions *rootOptions, prefix string, formatting ...textformat.Module) *cobra.Command {
 	options := &replyOptions{}
 	command := &cobra.Command{
 		Use:   "reply <slack-permalink>",
@@ -29,7 +30,7 @@ func newReplyCommand(deps Dependencies, rootOptions *rootOptions, prefix string)
 The command posts immediately. Read the conversation first and provide the exact
 reply text with --text. Replies include the configured message prefix as a small
 context line unless message_prefix is explicitly empty. Slack must
-grant the current user token chat:write.`,
+grant the current user token chat:write.` + formattingHelp(formatting, "The --text value"),
 		Example: `  slk reply 'https://workspace.slack.com/archives/C12345/p1705312325000100' --text 'We found the issue and will ship the fix tomorrow.'`,
 		Args:    argumentValidator(cobra.ExactArgs(1)),
 	}
@@ -49,16 +50,17 @@ grant the current user token chat:write.`,
 		if err != nil {
 			return err
 		}
-		return runReply(cmd, rootOptions, client, target, options.text, prefix)
+		return runReply(cmd, rootOptions, client, target, options.text, prefix, formatting...)
 	}
 	return command
 }
 
-func runReply(cmd *cobra.Command, rootOptions *rootOptions, client messagePostClient, target replyTarget, text, prefix string) error {
+func runReply(cmd *cobra.Command, rootOptions *rootOptions, client messagePostClient, target replyTarget, text, prefix string, modules ...textformat.Module) error {
+	formatted := textformat.Apply(text, modules)
 	return runMessagePost(cmd, rootOptions, client, messagePostTarget{
 		channelID: target.channelID,
 		threadTs:  target.threadTs,
-	}, text, prefix, postModeReply)
+	}, formatted.Text, prefix, postModeReply, formatted.Applied)
 }
 
 func parseReplyTarget(permalink string) (replyTarget, error) {

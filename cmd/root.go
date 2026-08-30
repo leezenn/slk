@@ -60,16 +60,16 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 		root.AddCommand(newDeleteCommand(deps, options))
 	}
 	if !settings.MutationDenied(config.MutationEdit) {
-		root.AddCommand(newEditCommand(deps, options))
+		root.AddCommand(newEditCommand(deps, options, settings.Formatting...))
 	}
 	if !settings.MutationDenied(config.MutationReplace) {
-		root.AddCommand(newReplaceCommand(deps, options, settings.MessagePrefix))
+		root.AddCommand(newReplaceCommand(deps, options, settings.MessagePrefix, settings.Formatting...))
 	}
 	if !settings.MutationDenied(config.MutationReply) {
-		root.AddCommand(newReplyCommand(deps, options, settings.MessagePrefix))
+		root.AddCommand(newReplyCommand(deps, options, settings.MessagePrefix, settings.Formatting...))
 	}
 	if !settings.MutationDenied(config.MutationWrite) {
-		root.AddCommand(newWriteCommand(deps, options, settings.MessagePrefix))
+		root.AddCommand(newWriteCommand(deps, options, settings.MessagePrefix, settings.Formatting...))
 	}
 	return root
 }
@@ -127,7 +127,7 @@ Configuration:
 	if len(capabilities) > 0 {
 		description += "; " + strings.Join(capabilities, ", ")
 	}
-	return description + `.
+	return description + `.` + rootFormattingHelp(settings.Formatting) + `
 
 Environment:
   SLACK_TOKEN       Fallback token if keychain is not configured

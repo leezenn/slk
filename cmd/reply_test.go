@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -61,6 +62,35 @@ func TestRunReplyReturnsCanonicalReceipt(t *testing.T) {
 	}
 }
 
+func TestRunReplyAppliesEnabledFormattingInJSONReceipt(t *testing.T) {
+	client := &fakeReplyClient{
+		posted:    &api.PostMessageResult{Channel: "C12345678", Ts: "1700000001.000002"},
+		permalink: "https://example.slack.com/archives/C12345678/p1700000001000002",
+	}
+	var stdout bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&stdout)
+	target := replyTarget{channelID: "C12345678", threadTs: "1700000000.000001"}
+
+	if err := runReply(
+		command,
+		&rootOptions{json: true},
+		client,
+		target,
+		"before —after",
+		"prefix",
+		textformat.ModuleEmDashToSpacedHyphen,
+	); err != nil {
+		t.Fatalf("runReply returned error: %v", err)
+	}
+	if client.request.Text != "before - after" {
+		t.Fatalf("formatted reply = %q", client.request.Text)
+	}
+	if !strings.Contains(stdout.String(), `"formatting_applied": [`) || !strings.Contains(stdout.String(), `"em-dash-to-spaced-hyphen"`) {
+		t.Fatalf("JSON receipt omitted formatting: %s", stdout.String())
+	}
+}
+
 func TestRunReplyReturnsJSONReceipt(t *testing.T) {
 	const permalink = "https://example.slack.com/archives/C12345678/p1700000001000002"
 	client := &fakeReplyClient{
@@ -75,7 +105,7 @@ func TestRunReplyReturnsJSONReceipt(t *testing.T) {
 	if err := runReply(command, &rootOptions{json: true}, client, target, "hello", "prefix"); err != nil {
 		t.Fatalf("runReply returned error: %v", err)
 	}
-	for _, want := range []string{`"posted": true`, `"permalink": "` + permalink + `"`, `"open_command": "slk open '` + permalink + `'"`} {
+	for _, want := range []string{`"posted": true`, `"permalink": "` + permalink + `"`, `"open_command": "slk open '` + permalink + `'"`, `"formatting_applied": []`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())
 		}

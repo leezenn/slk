@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -62,6 +63,9 @@ func TestEditHelpDocumentsOutputLayoutAndDriftContracts(t *testing.T) {
 		"block_id and verbatim",
 		"JSON success contract (--json):",
 		`"operation":"replace_exact"`,
+		`"formatting_applied":[]`,
+		"Formatting never changes --match.",
+		"Formatting: disabled.",
 		"Contract drift:",
 		"Do not strip blocks",
 		"rerun with --verbose",
@@ -98,7 +102,7 @@ func TestRunEditPatchesPlainMessageAndVerifies(t *testing.T) {
 	if client.updateRequest != wantRequest || client.updateCalls != 1 || client.messageIndex != 2 {
 		t.Fatalf("edit state = request %#v calls %d reads %d", client.updateRequest, client.updateCalls, client.messageIndex)
 	}
-	for _, want := range []string{`"edited": true`, `"operation": "replace_exact"`, `"target_permalink": "` + target.permalink + `"`, `"open_command": "slk open '`} {
+	for _, want := range []string{`"edited": true`, `"operation": "replace_exact"`, `"target_permalink": "` + target.permalink + `"`, `"open_command": "slk open '`, `"formatting_applied": []`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())
 		}
@@ -107,6 +111,39 @@ func TestRunEditPatchesPlainMessageAndVerifies(t *testing.T) {
 		if strings.Contains(stdout.String(), forbidden) {
 			t.Fatalf("edit JSON exposed %q: %s", forbidden, stdout.String())
 		}
+	}
+}
+
+func TestRunEditFormatsOnlyReplacementAndKeepsMatchExact(t *testing.T) {
+	target := rootMessageTarget()
+	client := &fakeEditClient{
+		selfID: "U12345678",
+		messages: []*api.Message{
+			{User: "U12345678", Ts: target.messageTs, Text: "old—fragment"},
+			{User: "U12345678", Ts: target.messageTs, Text: "new - fragment"},
+		},
+		updateResult: &api.UpdateMessageResult{Channel: target.channelID, Ts: target.messageTs},
+	}
+	var stdout bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&stdout)
+
+	if err := runEdit(
+		command,
+		&rootOptions{json: true},
+		client,
+		target,
+		"old—fragment",
+		"new—fragment",
+		textformat.ModuleEmDashToSpacedHyphen,
+	); err != nil {
+		t.Fatalf("runEdit() error = %v", err)
+	}
+	if client.updateRequest.Text != "new - fragment" {
+		t.Fatalf("formatted edit request = %#v", client.updateRequest)
+	}
+	if !strings.Contains(stdout.String(), `"formatting_applied": [`) || !strings.Contains(stdout.String(), `"em-dash-to-spaced-hyphen"`) {
+		t.Fatalf("edit JSON omitted formatting: %s", stdout.String())
 	}
 }
 

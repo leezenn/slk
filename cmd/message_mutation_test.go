@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
@@ -136,6 +137,36 @@ func TestRunReplaceUsesOwnedRootMessageAndReturnsReceipt(t *testing.T) {
 	}
 }
 
+func TestRunReplaceAppliesEnabledFormatting(t *testing.T) {
+	target := rootMessageTarget()
+	client := &fakeMessageMutationClient{
+		selfID:       "U12345678",
+		message:      &api.Message{User: "U12345678", Ts: target.messageTs},
+		updateResult: &api.UpdateMessageResult{Channel: target.channelID, Ts: target.messageTs},
+	}
+	var stdout bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&stdout)
+
+	if err := runReplace(
+		command,
+		&rootOptions{},
+		client,
+		target,
+		"complete—replacement",
+		"prefix",
+		textformat.ModuleEmDashToSpacedHyphen,
+	); err != nil {
+		t.Fatalf("runReplace() error = %v", err)
+	}
+	if client.updateRequest.Text != "complete - replacement" {
+		t.Fatalf("formatted replacement = %#v", client.updateRequest)
+	}
+	if !strings.Contains(stdout.String(), "Formatting applied: em-dash-to-spaced-hyphen.") {
+		t.Fatalf("replace receipt omitted formatting: %q", stdout.String())
+	}
+}
+
 func TestRunReplaceFetchesExactReplyAndReturnsJSON(t *testing.T) {
 	target := rootMessageTarget()
 	target.threadTs = "1700000000.000001"
@@ -155,7 +186,7 @@ func TestRunReplaceFetchesExactReplyAndReturnsJSON(t *testing.T) {
 	if client.getMessageCall || !client.getReplyCall {
 		t.Fatalf("reply lookup = root %v reply %v", client.getMessageCall, client.getReplyCall)
 	}
-	for _, want := range []string{`"replaced": true`, `"target_permalink": "` + target.permalink + `"`, `"open_command": "slk open '`} {
+	for _, want := range []string{`"replaced": true`, `"target_permalink": "` + target.permalink + `"`, `"open_command": "slk open '`, `"formatting_applied": []`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())
 		}

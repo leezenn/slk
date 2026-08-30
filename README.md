@@ -1,6 +1,6 @@
 # slk
 
-Last updated: 2026-08-27
+Last updated: 2026-08-30
 
 Slack CLI for exploring workspace activity, researching context, and managing explicit messages. Follow activity around people, search and read conversations, download files, capture notes, write and reply, edit exact fragments, replace complete message bodies, and permanently delete exact messages.
 
@@ -53,6 +53,8 @@ Activity combines messages authored by the person with searchable messages that 
 
 Write, reply, and replace apply the configured message prefix; edit preserves the message's existing prefix. The default, `:mechanical_arm: agent assisted response.`, appears as a smaller Slack context line before the regular message and as part of the plain-text fallback. Successful write/reply operations return Slack's canonical permalink; replace returns the target permalink and delete returns the deleted target without a misleading open command. Uncertain mutation outcomes instruct callers to inspect the exact target before retrying.
 
+Formatting modules are opt-in and disabled by default, so submitted model text remains exact. The `em-dash-to-spaced-hyphen` module converts an em dash and surrounding horizontal whitespace to one spaced ASCII hyphen: `word—word`, `word —word`, and `word— word` become `word - word`. It does not modify en dashes, ordinary hyphens, CLI flags, minus signs, or line breaks. Formatting applies to `write --text`, `reply --text`, `replace --text`, and only the `edit --with` fragment; `edit --match` remains exact. JSON receipts for those four commands always include `formatting_applied`, and their plain receipts identify a module only when it changed text.
+
 ## Configuration
 
 The optional configuration file is `$XDG_CONFIG_HOME/slk/config.json`, falling back to `~/.config/slk/config.json` when `XDG_CONFIG_HOME` is unset. `slk` does not create the file merely to apply defaults.
@@ -61,7 +63,8 @@ The optional configuration file is `$XDG_CONFIG_HOME/slk/config.json`, falling b
 {
   "disabled": false,
   "message_prefix": ":mechanical_arm: agent assisted response.",
-  "deny_mutations": []
+  "deny_mutations": [],
+  "formatting": []
 }
 ```
 
@@ -77,13 +80,16 @@ slk config set message-prefix ''
 slk config reset message-prefix
 slk config deny <delete|edit|replace|reply|write>
 slk config allow <delete|edit|replace|reply|write>
+slk config formatting
+slk config formatting enable em-dash-to-spaced-hyphen
+slk config formatting disable em-dash-to-spaced-hyphen
 slk config setup [--reconnect]
 slk config disconnect
 slk config disable
 slk config enable
 ```
 
-Bare `slk config` is read-only. Mutations validate and atomically persist the file. `deny_mutations` accepts `"delete"`, `"edit"`, `"replace"`, `"reply"`, and `"write"`; omitted or empty allows all five. Explicitly denied commands disappear from generated help and fail before credentials or Slack are accessed.
+Bare `slk config` and `slk config formatting` are read-only. Mutations validate and atomically persist the file. `deny_mutations` accepts `"delete"`, `"edit"`, `"replace"`, `"reply"`, and `"write"`; omitted or empty allows all five. `formatting` accepts only shipped module names; omitted or empty disables formatting. Explicitly denied commands disappear from generated help and fail before credentials or Slack are accessed.
 
 When `disabled` is true, all Slack operational commands—including top-level `auth`—are hidden and blocked regardless of stored or environment credentials. Root help reports the disabled state. `config` remains available for recovery, and agents must ask the user for permission before running `slk config enable`. Setup and reconnect never silently enable the tool.
 
@@ -103,7 +109,8 @@ slk - Explore Slack activity, research workspace context, and post explicit mess
       Follow rendered `slk open '<permalink>'` commands to inspect a search hit in context.
       `slk read` for chronological context (recent conversation flow).
       Follow rendered `slk download F...` commands to fetch attachments safely.
-      Treat the current `slk --help` as authoritative because denied or globally disabled commands are omitted.
+      Treat the current `slk --help` as authoritative because denied or globally disabled commands are omitted and enabled formatting modules are disclosed.
+      Check `formatting_applied` in mutation JSON receipts before comparing submitted text with Slack read-back.
       If help says slk is disabled, ask the user for permission before running `slk config enable`.
       `slk write '<channel-or-user>' --text '<message>'` posts a top-level message immediately; confirm the exact target and text first.
       `slk reply '<permalink>' --text '<message>'` posts immediately; confirm the exact reply first.
