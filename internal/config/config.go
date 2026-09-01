@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 )
 
@@ -42,23 +43,28 @@ var knownMutations = map[Mutation]struct{}{
 
 // Settings contains effective slk configuration after defaults are applied.
 type Settings struct {
-	Disabled        bool
-	MessagePrefix   string
-	DeniedMutations []Mutation
-	Formatting      []textformat.Module
+	Disabled            bool
+	MessagePrefix       string
+	MessagePresentation presentation.Mode
+	DeniedMutations     []Mutation
+	Formatting          []textformat.Module
 }
 
 // Document preserves explicit versus defaulted values for config mutations.
 type Document struct {
-	Disabled        bool
-	MessagePrefix   *string
-	DeniedMutations []Mutation
-	Formatting      []textformat.Module
+	Disabled            bool
+	MessagePrefix       *string
+	MessagePresentation *presentation.Mode
+	DeniedMutations     []Mutation
+	Formatting          []textformat.Module
 }
 
 // Defaults returns effective settings when the optional config file is absent.
 func Defaults() Settings {
-	return Settings{MessagePrefix: DefaultMessagePrefix}
+	return Settings{
+		MessagePrefix:       DefaultMessagePrefix,
+		MessagePresentation: presentation.Default(),
+	}
 }
 
 // Effective applies built-in defaults to a persisted document.
@@ -67,6 +73,9 @@ func (d Document) Effective() Settings {
 	settings.Disabled = d.Disabled
 	if d.MessagePrefix != nil {
 		settings.MessagePrefix = *d.MessagePrefix
+	}
+	if d.MessagePresentation != nil {
+		settings.MessagePresentation = *d.MessagePresentation
 	}
 	settings.DeniedMutations = append([]Mutation(nil), d.DeniedMutations...)
 	settings.Formatting = append([]textformat.Module(nil), d.Formatting...)
@@ -114,10 +123,11 @@ type fileStore struct{}
 func NewStore() Store { return fileStore{} }
 
 type fileSettings struct {
-	Disabled        bool     `json:"disabled,omitempty"`
-	MessagePrefix   *string  `json:"message_prefix,omitempty"`
-	DeniedMutations []string `json:"deny_mutations,omitempty"`
-	Formatting      []string `json:"formatting,omitempty"`
+	Disabled            bool               `json:"disabled,omitempty"`
+	MessagePrefix       *string            `json:"message_prefix,omitempty"`
+	MessagePresentation *presentation.Mode `json:"message_presentation,omitempty"`
+	DeniedMutations     []string           `json:"deny_mutations,omitempty"`
+	Formatting          []string           `json:"formatting,omitempty"`
 }
 
 // Path returns the stable per-user configuration path.
@@ -189,8 +199,9 @@ func LoadDocumentFile(path string) (Document, error) {
 	}
 
 	document := Document{
-		Disabled:      stored.Disabled,
-		MessagePrefix: stored.MessagePrefix,
+		Disabled:            stored.Disabled,
+		MessagePrefix:       stored.MessagePrefix,
+		MessagePresentation: stored.MessagePresentation,
 	}
 	for _, raw := range stored.DeniedMutations {
 		mutation, known := ParseMutation(raw)
@@ -229,15 +240,17 @@ func SaveFile(path string, document Document) error {
 	}
 
 	stored := struct {
-		Disabled        bool                `json:"disabled,omitempty"`
-		MessagePrefix   *string             `json:"message_prefix,omitempty"`
-		DeniedMutations []Mutation          `json:"deny_mutations,omitempty"`
-		Formatting      []textformat.Module `json:"formatting,omitempty"`
+		Disabled            bool                `json:"disabled,omitempty"`
+		MessagePrefix       *string             `json:"message_prefix,omitempty"`
+		MessagePresentation *presentation.Mode  `json:"message_presentation,omitempty"`
+		DeniedMutations     []Mutation          `json:"deny_mutations,omitempty"`
+		Formatting          []textformat.Module `json:"formatting,omitempty"`
 	}{
-		Disabled:        document.Disabled,
-		MessagePrefix:   document.MessagePrefix,
-		DeniedMutations: append([]Mutation(nil), document.DeniedMutations...),
-		Formatting:      append([]textformat.Module(nil), document.Formatting...),
+		Disabled:            document.Disabled,
+		MessagePrefix:       document.MessagePrefix,
+		MessagePresentation: document.MessagePresentation,
+		DeniedMutations:     append([]Mutation(nil), document.DeniedMutations...),
+		Formatting:          append([]textformat.Module(nil), document.Formatting...),
 	}
 	sort.Slice(stored.DeniedMutations, func(i, j int) bool {
 		return stored.DeniedMutations[i] < stored.DeniedMutations[j]
@@ -284,6 +297,12 @@ func SaveFile(path string, document Document) error {
 }
 
 func validateDocument(document *Document) error {
+	if document.MessagePresentation != nil {
+		if _, known := presentation.Parse(string(*document.MessagePresentation)); !known {
+			return fmt.Errorf("message_presentation must be %q or %q", presentation.SlackManaged, presentation.AlwaysExpanded)
+		}
+	}
+
 	if document.MessagePrefix != nil {
 		prefix := *document.MessagePrefix
 		if prefix != "" && strings.TrimSpace(prefix) == "" {

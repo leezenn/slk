@@ -23,7 +23,8 @@ func newAuthCommand(deps Dependencies, _ *rootOptions) *cobra.Command {
 		Long: `Store a Slack API token, show auth status, or clear stored credentials.
 
 Requires a User OAuth Token (xoxp-). If the Slack app is already installed,
-copy your token from OAuth & Permissions at https://api.slack.com/apps.`,
+copy your token from OAuth & Permissions at https://api.slack.com/apps.
+Authentication output is semantic text; the inherited --json flag has no effect.`,
 		Example: `  slk auth xoxp-your-token-here    # Store token (non-interactive)
   slk auth                          # Show status or guided setup
   slk auth --interactive            # Reconnect interactively
@@ -119,7 +120,6 @@ func authAccessSummary(scopes []string) []string {
 		{feature: "workspace discovery", scopes: []string{"search:read"}},
 		{feature: "people and activity targeting", scopes: []string{"users:read"}},
 		{feature: "file downloads", scopes: []string{"files:read"}},
-		{feature: "reactions and notes", scopes: []string{"reactions:read"}},
 	}
 
 	var missingFeatures, missingScopes []string
@@ -191,7 +191,7 @@ func guidedSetupWithReader(cmd *cobra.Command, deps Dependencies, store auth.Sto
 	fmt.Fprintln(out, "  2. OAuth & Permissions -> add these User Token Scopes:")
 	fmt.Fprintln(out, "     channels:history, channels:read, groups:history, groups:read,")
 	fmt.Fprintln(out, "     im:history, im:read, mpim:history, mpim:read,")
-	fmt.Fprintln(out, "     reactions:read, search:read, users:read, files:read")
+	fmt.Fprintln(out, "     search:read, users:read, files:read")
 	fmt.Fprintln(out, "     Optional for write, reply, edit, replace, and delete: chat:write")
 	fmt.Fprintln(out, "  3. Install to Workspace -> Copy User OAuth Token")
 	fmt.Fprintln(out)

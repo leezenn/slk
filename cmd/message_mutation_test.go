@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
@@ -119,18 +120,18 @@ func TestRunReplaceUsesOwnedRootMessageAndReturnsReceipt(t *testing.T) {
 	command := &cobra.Command{}
 	command.SetOut(&stdout)
 
-	err := runReplace(command, &rootOptions{}, client, target, "Complete replacement.", "agent assisted")
+	err := runReplace(command, &rootOptions{}, client, target, "Complete replacement.", "agent assisted", presentation.AlwaysExpanded)
 	if err != nil {
 		t.Fatalf("runReplace() error = %v", err)
 	}
 	wantRequest := api.UpdateMessageRequest{
 		ChannelID: target.channelID, MessageTs: target.messageTs,
-		Text: "Complete replacement.", Prefix: "agent assisted",
+		Text: "Complete replacement.", Prefix: "agent assisted", Presentation: presentation.AlwaysExpanded,
 	}
 	if client.updateRequest != wantRequest || client.updateCalls != 1 || !client.getMessageCall || client.getReplyCall {
 		t.Fatalf("replace state = request %#v update %d root %v reply %v", client.updateRequest, client.updateCalls, client.getMessageCall, client.getReplyCall)
 	}
-	for _, want := range []string{"Message replaced.", target.permalink, "Open: slk open '" + target.permalink + "'"} {
+	for _, want := range []string{"Message replaced.", "Presentation requested: always-expanded", target.permalink, "Open: slk open '" + target.permalink + "'"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("receipt omitted %q: %q", want, stdout.String())
 		}
@@ -155,6 +156,7 @@ func TestRunReplaceAppliesEnabledFormatting(t *testing.T) {
 		target,
 		"complete—replacement",
 		"prefix",
+		presentation.SlackManaged,
 		textformat.ModuleEmDashToSpacedHyphen,
 	); err != nil {
 		t.Fatalf("runReplace() error = %v", err)
@@ -180,13 +182,13 @@ func TestRunReplaceFetchesExactReplyAndReturnsJSON(t *testing.T) {
 	command := &cobra.Command{}
 	command.SetOut(&stdout)
 
-	if err := runReplace(command, &rootOptions{json: true}, client, target, "replacement", ""); err != nil {
+	if err := runReplace(command, &rootOptions{json: true}, client, target, "replacement", "", presentation.SlackManaged); err != nil {
 		t.Fatalf("runReplace() error = %v", err)
 	}
 	if client.getMessageCall || !client.getReplyCall {
 		t.Fatalf("reply lookup = root %v reply %v", client.getMessageCall, client.getReplyCall)
 	}
-	for _, want := range []string{`"replaced": true`, `"target_permalink": "` + target.permalink + `"`, `"open_command": "slk open '`, `"formatting_applied": []`} {
+	for _, want := range []string{`"replaced": true`, `"target_permalink": "` + target.permalink + `"`, `"open_command": "slk open '`, `"formatting_applied": []`, `"message_presentation": "slack-managed"`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())
 		}
@@ -210,7 +212,7 @@ func TestMessageMutationsRefuseOtherAuthorsBeforeMutation(t *testing.T) {
 		run  func(*cobra.Command) error
 	}{
 		{name: "replace", run: func(command *cobra.Command) error {
-			return runReplace(command, &rootOptions{}, client, target, "replacement", "prefix")
+			return runReplace(command, &rootOptions{}, client, target, "replacement", "prefix", presentation.SlackManaged)
 		}},
 		{name: "delete", run: func(command *cobra.Command) error {
 			return runDelete(command, &rootOptions{}, client, target)

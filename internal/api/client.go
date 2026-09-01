@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/leezenn/slk/internal/presentation"
 )
 
 const baseURL = "https://slack.com/api/"
@@ -235,13 +237,6 @@ type UserProfile struct {
 	StatusEmoji string `json:"status_emoji"`
 	StatusText  string `json:"status_text"`
 	Image48     string `json:"image_48"`
-}
-
-// ReactionsListItem is an item from reactions.list.
-type ReactionsListItem struct {
-	Type    string  `json:"type"`
-	Channel string  `json:"channel"`
-	Message Message `json:"message"`
 }
 
 // SearchResult represents a search result.
@@ -725,15 +720,17 @@ type PostMessageRequest struct {
 	ThreadTs       string
 	Text           string
 	Prefix         string
+	Presentation   presentation.Mode
 	ReplyBroadcast bool
 }
 
 // UpdateMessageRequest replaces one message's complete body.
 type UpdateMessageRequest struct {
-	ChannelID string
-	MessageTs string
-	Text      string
-	Prefix    string
+	ChannelID    string
+	MessageTs    string
+	Text         string
+	Prefix       string
+	Presentation presentation.Mode
 }
 
 // MessageMutationResult identifies a message Slack changed.
@@ -762,6 +759,7 @@ type slackBlock struct {
 	Type     string            `json:"type"`
 	Text     *slackTextObject  `json:"text,omitempty"`
 	Elements []slackTextObject `json:"elements,omitempty"`
+	Expand   bool              `json:"expand,omitempty"`
 }
 
 // PostMessage posts one message. A non-empty prefix is rendered as a smaller
@@ -770,7 +768,7 @@ func (c *Client) PostMessage(request PostMessageRequest) (*PostMessageResult, er
 	if request.ReplyBroadcast && request.ThreadTs == "" {
 		return nil, fmt.Errorf("posting reply broadcast: thread timestamp is required")
 	}
-	text, blocks, err := encodeMessageContent(request.Text, request.Prefix)
+	text, blocks, err := encodeMessageContent(request.Text, request.Prefix, request.Presentation)
 	if err != nil {
 		return nil, fmt.Errorf("encoding chat.postMessage blocks: %w", err)
 	}
@@ -804,7 +802,7 @@ func (c *Client) PostMessage(request PostMessageRequest) (*PostMessageResult, er
 
 // UpdateMessage replaces one message's complete text and rendered blocks.
 func (c *Client) UpdateMessage(request UpdateMessageRequest) (*UpdateMessageResult, error) {
-	text, blocks, err := encodeMessageContent(request.Text, request.Prefix)
+	text, blocks, err := encodeMessageContent(request.Text, request.Prefix, request.Presentation)
 	if err != nil {
 		return nil, fmt.Errorf("encoding chat.update blocks: %w", err)
 	}
@@ -855,30 +853,48 @@ func (c *Client) DeleteMessage(channelID, messageTs string) (*DeleteMessageResul
 	return &result, nil
 }
 
-func encodeMessageContent(text, prefix string) (string, string, error) {
-	if prefix == "" {
-		return text, "", nil
-	}
-	blocks, err := json.Marshal(messageBlocks(text, prefix))
+func encodeMessageContent(text, prefix string, requested presentation.Mode) (string, string, error) {
+	mode, err := presentation.Effective(requested)
 	if err != nil {
 		return "", "", err
 	}
-	return prefix + "\n\n" + text, string(blocks), nil
+	if prefix == "" && mode == presentation.SlackManaged {
+		return text, "", nil
+	}
+	blocks, err := json.Marshal(messageBlocks(text, prefix, mode))
+	if err != nil {
+		return "", "", err
+	}
+	fallback := text
+	if prefix != "" {
+		fallback = prefix + "\n\n" + text
+	}
+	return fallback, string(blocks), nil
 }
 
-func messageBlocks(text, prefix string) []slackBlock {
+func messageBlocks(text, prefix string, mode presentation.Mode) []slackBlock {
 	sections := splitSlackSectionText(text)
-	blocks := make([]slackBlock, 0, len(sections)+1)
-	blocks = append(blocks, slackBlock{
-		Type: "context",
-		Elements: []slackTextObject{{
-			Type: "mrkdwn",
-			Text: prefix,
-		}},
-	})
+	capacity := len(sections)
+	if prefix != "" {
+		capacity++
+	}
+	blocks := make([]slackBlock, 0, capacity)
+	if prefix != "" {
+		blocks = append(blocks, slackBlock{
+			Type: "context",
+			Elements: []slackTextObject{{
+				Type: "mrkdwn",
+				Text: prefix,
+			}},
+		})
+	}
 	for _, section := range sections {
 		sectionText := slackTextObject{Type: "mrkdwn", Text: section}
-		blocks = append(blocks, slackBlock{Type: "section", Text: &sectionText})
+		blocks = append(blocks, slackBlock{
+			Type:   "section",
+			Text:   &sectionText,
+			Expand: mode == presentation.AlwaysExpanded,
+		})
 	}
 	return blocks
 }
@@ -922,50 +938,6 @@ func (c *Client) GetPermalink(channelID, messageTs string) (string, error) {
 		return "", fmt.Errorf("parsing chat.getPermalink: successful response omitted permalink")
 	}
 	return result.Permalink, nil
-}
-
-// ReactionsList returns items the authenticated user has reacted to.
-// limit caps total items returned (0 = all).
-func (c *Client) ReactionsList(limit int) ([]ReactionsListItem, error) {
-	var all []ReactionsListItem
-	cursor := ""
-
-	for {
-		params := url.Values{
-			"full":  {"true"},
-			"limit": {"100"},
-		}
-		if cursor != "" {
-			params.Set("cursor", cursor)
-		}
-
-		body, err := c.post("reactions.list", params)
-		if err != nil {
-			return nil, err
-		}
-
-		var resp struct {
-			SlackResponse
-			Items []ReactionsListItem `json:"items"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, err
-		}
-
-		all = append(all, resp.Items...)
-
-		if limit > 0 && len(all) >= limit {
-			all = all[:limit]
-			break
-		}
-
-		cursor = resp.ResponseMetadata.NextCursor
-		if cursor == "" {
-			break
-		}
-	}
-
-	return all, nil
 }
 
 // ListUsers returns all workspace users.

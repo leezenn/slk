@@ -7,23 +7,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 )
 
 func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 	tests := []struct {
-		name           string
-		content        *string
-		wantPrefix     string
-		wantOff        bool
-		wantDenied     []Mutation
-		wantFormatting []textformat.Module
-		wantErr        string
+		name             string
+		content          *string
+		wantPrefix       string
+		wantPresentation presentation.Mode
+		wantOff          bool
+		wantDenied       []Mutation
+		wantFormatting   []textformat.Module
+		wantErr          string
 	}{
 		{name: "missing file", wantPrefix: DefaultMessagePrefix},
 		{name: "missing keys", content: stringPointer(`{}`), wantPrefix: DefaultMessagePrefix},
 		{name: "prefix override", content: stringPointer(`{"message_prefix":"Reviewed by the operator."}`), wantPrefix: "Reviewed by the operator."},
 		{name: "explicit empty prefix disables", content: stringPointer(`{"message_prefix":""}`), wantPrefix: ""},
+		{name: "always expanded presentation", content: stringPointer(`{"message_presentation":"always-expanded"}`), wantPrefix: DefaultMessagePrefix, wantPresentation: presentation.AlwaysExpanded},
+		{name: "explicit slack managed presentation", content: stringPointer(`{"message_presentation":"slack-managed"}`), wantPrefix: DefaultMessagePrefix, wantPresentation: presentation.SlackManaged},
 		{name: "tool disabled", content: stringPointer(`{"disabled":true}`), wantPrefix: DefaultMessagePrefix, wantOff: true},
 		{name: "omitted deny list allows all", content: stringPointer(`{}`), wantPrefix: DefaultMessagePrefix},
 		{name: "empty deny list allows all", content: stringPointer(`{"deny_mutations":[]}`), wantPrefix: DefaultMessagePrefix},
@@ -37,6 +41,8 @@ func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 		{name: "wrong deny list type rejected", content: stringPointer(`{"deny_mutations":"write"}`), wantErr: "cannot unmarshal"},
 		{name: "whitespace only prefix rejected", content: stringPointer(`{"message_prefix":"   "}`), wantErr: "must be empty or contain visible text"},
 		{name: "wrong prefix type rejected", content: stringPointer(`{"message_prefix":false}`), wantErr: "cannot unmarshal"},
+		{name: "unknown presentation rejected", content: stringPointer(`{"message_presentation":"forced"}`), wantErr: "message_presentation must be"},
+		{name: "wrong presentation type rejected", content: stringPointer(`{"message_presentation":false}`), wantErr: "cannot unmarshal"},
 		{name: "removed reply key rejected", content: stringPointer(`{"reply_prefix":"hello"}`), wantErr: "unknown field"},
 		{name: "multiple values rejected", content: stringPointer(`{} {}`), wantErr: "multiple JSON values"},
 	}
@@ -60,8 +66,12 @@ func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadFile() error = %v", err)
 			}
-			if settings.MessagePrefix != test.wantPrefix || settings.Disabled != test.wantOff {
-				t.Fatalf("settings = %#v, want prefix %q disabled %v", settings, test.wantPrefix, test.wantOff)
+			wantPresentation := test.wantPresentation
+			if wantPresentation == "" {
+				wantPresentation = presentation.Default()
+			}
+			if settings.MessagePrefix != test.wantPrefix || settings.MessagePresentation != wantPresentation || settings.Disabled != test.wantOff {
+				t.Fatalf("settings = %#v, want prefix %q presentation %q disabled %v", settings, test.wantPrefix, wantPresentation, test.wantOff)
 			}
 			if len(settings.DeniedMutations) != len(test.wantDenied) {
 				t.Fatalf("denied mutations = %v, want %v", settings.DeniedMutations, test.wantDenied)
@@ -80,37 +90,39 @@ func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
 	}
 }
 
-func TestLoadDocumentPreservesDefaultAndExplicitEmptyPrefix(t *testing.T) {
+func TestLoadDocumentPreservesDefaultAndExplicitExpressionValues(t *testing.T) {
 	directory := t.TempDir()
 	missing, err := LoadDocumentFile(filepath.Join(directory, "missing.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if missing.MessagePrefix != nil {
-		t.Fatalf("missing document prefix = %q, want nil", *missing.MessagePrefix)
+	if missing.MessagePrefix != nil || missing.MessagePresentation != nil {
+		t.Fatalf("missing document expression values = %#v", missing)
 	}
 
 	path := filepath.Join(directory, "explicit.json")
-	if err := os.WriteFile(path, []byte(`{"message_prefix":""}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"message_prefix":"","message_presentation":"always-expanded"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	explicit, err := LoadDocumentFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if explicit.MessagePrefix == nil || *explicit.MessagePrefix != "" {
-		t.Fatalf("explicit document prefix = %#v, want pointer to empty string", explicit.MessagePrefix)
+	if explicit.MessagePrefix == nil || *explicit.MessagePrefix != "" || explicit.MessagePresentation == nil || *explicit.MessagePresentation != presentation.AlwaysExpanded {
+		t.Fatalf("explicit document expression values = %#v", explicit)
 	}
 }
 
 func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
 	prefix := "Operator reviewed."
+	mode := presentation.AlwaysExpanded
 	document := Document{
-		Disabled:        true,
-		MessagePrefix:   &prefix,
-		DeniedMutations: []Mutation{MutationWrite, MutationDelete, MutationReply, MutationEdit, MutationReplace, MutationWrite},
-		Formatting:      []textformat.Module{textformat.ModuleEmDashToSpacedHyphen, textformat.ModuleEmDashToSpacedHyphen},
+		Disabled:            true,
+		MessagePrefix:       &prefix,
+		MessagePresentation: &mode,
+		DeniedMutations:     []Mutation{MutationWrite, MutationDelete, MutationReply, MutationEdit, MutationReplace, MutationWrite},
+		Formatting:          []textformat.Module{textformat.ModuleEmDashToSpacedHyphen, textformat.ModuleEmDashToSpacedHyphen},
 	}
 	if err := SaveFile(path, document); err != nil {
 		t.Fatalf("SaveFile() error = %v", err)
@@ -128,15 +140,16 @@ func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stored struct {
-		Disabled        bool                `json:"disabled"`
-		MessagePrefix   string              `json:"message_prefix"`
-		DeniedMutations []Mutation          `json:"deny_mutations"`
-		Formatting      []textformat.Module `json:"formatting"`
+		Disabled            bool                `json:"disabled"`
+		MessagePrefix       string              `json:"message_prefix"`
+		MessagePresentation presentation.Mode   `json:"message_presentation"`
+		DeniedMutations     []Mutation          `json:"deny_mutations"`
+		Formatting          []textformat.Module `json:"formatting"`
 	}
 	if err := json.Unmarshal(contents, &stored); err != nil {
 		t.Fatal(err)
 	}
-	if !stored.Disabled || stored.MessagePrefix != prefix {
+	if !stored.Disabled || stored.MessagePrefix != prefix || stored.MessagePresentation != mode {
 		t.Fatalf("stored config = %#v", stored)
 	}
 	wantDenied := []Mutation{MutationDelete, MutationEdit, MutationReplace, MutationReply, MutationWrite}
@@ -157,7 +170,7 @@ func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.Disabled || loaded.MessagePrefix != prefix {
+	if !loaded.Disabled || loaded.MessagePrefix != prefix || loaded.MessagePresentation != mode {
 		t.Fatalf("loaded settings = %#v", loaded)
 	}
 	for _, mutation := range wantDenied {
@@ -179,8 +192,8 @@ func TestSaveFileOmitsResetPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(contents), "message_prefix") {
-		t.Fatalf("reset config persisted message_prefix: %s", contents)
+	if strings.Contains(string(contents), "message_prefix") || strings.Contains(string(contents), "message_presentation") {
+		t.Fatalf("reset config persisted expression preferences: %s", contents)
 	}
 	if strings.Contains(string(contents), "formatting") {
 		t.Fatalf("default config persisted formatting: %s", contents)

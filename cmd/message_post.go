@@ -6,6 +6,7 @@ import (
 
 	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/format"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
@@ -35,6 +36,7 @@ func runMessagePost(
 	target messagePostTarget,
 	text string,
 	prefix string,
+	presentationMode presentation.Mode,
 	mode messagePostMode,
 	formattingApplied []textformat.Module,
 ) error {
@@ -43,6 +45,7 @@ func runMessagePost(
 		ThreadTs:       target.threadTs,
 		Text:           text,
 		Prefix:         prefix,
+		Presentation:   presentationMode,
 		ReplyBroadcast: target.replyBroadcast,
 	})
 	if err != nil {
@@ -56,13 +59,14 @@ func runMessagePost(
 
 	if rootOptions.json {
 		payload := map[string]interface{}{
-			"ok":                 true,
-			"posted":             true,
-			"channel":            posted.Channel,
-			"ts":                 posted.Ts,
-			"permalink":          permalink,
-			"open_command":       format.OpenCommand(permalink),
-			"formatting_applied": formattingReceipt(formattingApplied),
+			"ok":                   true,
+			"posted":               true,
+			"channel":              posted.Channel,
+			"ts":                   posted.Ts,
+			"permalink":            permalink,
+			"open_command":         format.OpenCommand(permalink),
+			"formatting_applied":   formattingReceipt(formattingApplied),
+			"message_presentation": presentationMode,
 		}
 		if target.threadTs != "" {
 			payload["thread_ts"] = target.threadTs
@@ -83,6 +87,7 @@ func runMessagePost(
 		fmt.Fprintln(cmd.OutOrStdout(), "Conversation broadcast requested.")
 	}
 	writeFormattingNotice(cmd, formattingApplied)
+	writeRequestedPresentation(cmd, presentationMode)
 	if permalink != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), permalink)
 		fmt.Fprintf(cmd.OutOrStdout(), "Open: %s\n", format.OpenCommand(permalink))

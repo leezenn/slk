@@ -8,6 +8,7 @@ import (
 
 	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/config"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +35,7 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 		Long:          rootLong(settings),
 		Example:       rootExamples(settings),
 	}
-	root.PersistentFlags().BoolVar(&options.json, "json", false, "Output as JSON")
+	root.PersistentFlags().BoolVar(&options.json, "json", false, "Output structured success data where supported")
 	root.PersistentFlags().BoolVarP(&options.verbose, "verbose", "v", false, "Show progress and detailed output")
 	root.AddCommand(newConfigCommand(deps, options))
 	if settings.Disabled {
@@ -47,7 +48,6 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 		newChannelsCommand(deps, options),
 		newDownloadCommand(deps, options),
 		newMembersCommand(deps, options),
-		newNotesCommand(deps, options),
 		newOpenCommand(deps, options),
 		newReadCommand(deps, options),
 		newRecentCommand(deps, options),
@@ -63,13 +63,13 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 		root.AddCommand(newEditCommand(deps, options, settings.Formatting...))
 	}
 	if !settings.MutationDenied(config.MutationReplace) {
-		root.AddCommand(newReplaceCommand(deps, options, settings.MessagePrefix, settings.Formatting...))
+		root.AddCommand(newReplaceCommand(deps, options, settings.MessagePrefix, settings.MessagePresentation, settings.Formatting...))
 	}
 	if !settings.MutationDenied(config.MutationReply) {
-		root.AddCommand(newReplyCommand(deps, options, settings.MessagePrefix, settings.Formatting...))
+		root.AddCommand(newReplyCommand(deps, options, settings.MessagePrefix, settings.MessagePresentation, settings.Formatting...))
 	}
 	if !settings.MutationDenied(config.MutationWrite) {
-		root.AddCommand(newWriteCommand(deps, options, settings.MessagePrefix, settings.Formatting...))
+		root.AddCommand(newWriteCommand(deps, options, settings.MessagePrefix, settings.MessagePresentation, settings.Formatting...))
 	}
 	return root
 }
@@ -127,7 +127,7 @@ Configuration:
 	if len(capabilities) > 0 {
 		description += "; " + strings.Join(capabilities, ", ")
 	}
-	return description + `.` + rootFormattingHelp(settings.Formatting) + `
+	return description + `.` + rootPresentationHelp(settings) + rootFormattingHelp(settings.Formatting) + `
 
 Environment:
   SLACK_TOKEN       Fallback token if keychain is not configured
@@ -135,6 +135,31 @@ Environment:
 
 Configuration:
   $XDG_CONFIG_HOME/slk/config.json`
+}
+
+func rootPresentationHelp(settings config.Settings) string {
+	mode, err := presentation.Effective(settings.MessagePresentation)
+	if err != nil {
+		mode = presentation.Default()
+	}
+	help := fmt.Sprintf(`
+
+Message presentation:
+  Effective default: %s
+  Accepted values: slack-managed, always-expanded.`, mode)
+	overrideOwners := make([]string, 0, 3)
+	for _, mutation := range []config.Mutation{config.MutationWrite, config.MutationReply, config.MutationReplace} {
+		if !settings.MutationDenied(mutation) {
+			overrideOwners = append(overrideOwners, string(mutation))
+		}
+	}
+	if len(overrideOwners) > 0 {
+		help += fmt.Sprintf("\n  Override owners: %s (--presentation, then config, then built-in).", strings.Join(overrideOwners, ", "))
+	}
+	if !settings.MutationDenied(config.MutationEdit) {
+		help += "\n  Edit preservation: edit has no override and preserves target presentation."
+	}
+	return help
 }
 
 func rootExamples(settings config.Settings) string {

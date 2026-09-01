@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
@@ -60,10 +61,12 @@ func TestEditHelpDocumentsOutputLayoutAndDriftContracts(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Supported message layouts:",
-		"block_id and verbatim",
+		"block_id, verbatim, and section expand",
 		"JSON success contract (--json):",
 		`"operation":"replace_exact"`,
 		`"formatting_applied":[]`,
+		`"message_presentation":"slack-managed"`,
+		"it preserves the target's normalized message presentation",
 		"Formatting never changes --match.",
 		"Formatting: disabled.",
 		"Contract drift:",
@@ -97,12 +100,12 @@ func TestRunEditPatchesPlainMessageAndVerifies(t *testing.T) {
 	}
 	wantRequest := api.UpdateMessageRequest{
 		ChannelID: target.channelID, MessageTs: target.messageTs,
-		Text: "deploy tomorrow now",
+		Text: "deploy tomorrow now", Presentation: presentation.SlackManaged,
 	}
 	if client.updateRequest != wantRequest || client.updateCalls != 1 || client.messageIndex != 2 {
 		t.Fatalf("edit state = request %#v calls %d reads %d", client.updateRequest, client.updateCalls, client.messageIndex)
 	}
-	for _, want := range []string{`"edited": true`, `"operation": "replace_exact"`, `"target_permalink": "` + target.permalink + `"`, `"open_command": "slk open '`, `"formatting_applied": []`} {
+	for _, want := range []string{`"edited": true`, `"operation": "replace_exact"`, `"target_permalink": "` + target.permalink + `"`, `"open_command": "slk open '`, `"formatting_applied": []`, `"message_presentation": "slack-managed"`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())
 		}
@@ -167,11 +170,89 @@ func TestRunEditPreservesExistingPrefixAcrossSplitSections(t *testing.T) {
 	if err := runEdit(command, &rootOptions{}, client, target, "old", "new"); err != nil {
 		t.Fatalf("runEdit() error = %v", err)
 	}
-	if client.updateRequest.Text != patchedBody || client.updateRequest.Prefix != prefix {
+	if client.updateRequest.Text != patchedBody || client.updateRequest.Prefix != prefix || client.updateRequest.Presentation != presentation.SlackManaged {
 		t.Fatalf("update request = %#v; current body %q", client.updateRequest, currentBody)
 	}
-	if !strings.Contains(stdout.String(), "Message edited.") || !strings.Contains(stdout.String(), target.permalink) {
+	if !strings.Contains(stdout.String(), "Message edited.") || !strings.Contains(stdout.String(), "Presentation preserved: slack-managed") || !strings.Contains(stdout.String(), target.permalink) {
 		t.Fatalf("text receipt = %q", stdout.String())
+	}
+}
+
+func TestRunEditPreservesAlwaysExpandedWithAndWithoutPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "prefixed", prefix: "agent assisted"},
+		{name: "prefixless"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target := rootMessageTarget()
+			client := &fakeEditClient{
+				selfID: "U12345678",
+				messages: []*api.Message{
+					expandedMessage(t, "U12345678", target.messageTs, test.prefix, "old body"),
+					expandedMessage(t, "U12345678", target.messageTs, test.prefix, "new body"),
+				},
+				updateResult: &api.UpdateMessageResult{Channel: target.channelID, Ts: target.messageTs},
+			}
+			var stdout bytes.Buffer
+			command := &cobra.Command{}
+			command.SetOut(&stdout)
+
+			if err := runEdit(command, &rootOptions{}, client, target, "old", "new"); err != nil {
+				t.Fatalf("runEdit() error = %v", err)
+			}
+			if client.updateRequest.Text != "new body" || client.updateRequest.Prefix != test.prefix ||
+				client.updateRequest.Presentation != presentation.AlwaysExpanded {
+				t.Fatalf("expanded update request = %#v", client.updateRequest)
+			}
+			if !strings.Contains(stdout.String(), "Presentation preserved: always-expanded") {
+				t.Fatalf("expanded receipt = %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestRunEditRefusesMixedPresentationBeforeMutation(t *testing.T) {
+	target := rootMessageTarget()
+	message := expandedMessage(t, "U12345678", target.messageTs, "prefix", "old ", "body")
+	message.Blocks[2] = rawJSON(t, map[string]interface{}{
+		"type":   "section",
+		"text":   map[string]string{"type": "mrkdwn", "text": "body"},
+		"expand": false,
+	})
+	client := &fakeEditClient{selfID: "U12345678", messages: []*api.Message{message}}
+
+	err := runEdit(&cobra.Command{}, &rootOptions{}, client, target, "old", "new")
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) || commandErr.Code != ErrorRefused {
+		t.Fatalf("mixed presentation error = %#v", err)
+	}
+	if client.updateCalls != 0 {
+		t.Fatalf("mixed presentation made %d update calls", client.updateCalls)
+	}
+}
+
+func TestRunEditReportsPresentationVerificationMismatch(t *testing.T) {
+	target := rootMessageTarget()
+	client := &fakeEditClient{
+		selfID: "U12345678",
+		messages: []*api.Message{
+			expandedMessage(t, "U12345678", target.messageTs, "prefix", "old body"),
+			prefixedMessage(t, "U12345678", target.messageTs, "prefix", "new body"),
+		},
+		updateResult: &api.UpdateMessageResult{Channel: target.channelID, Ts: target.messageTs},
+	}
+
+	err := runEdit(&cobra.Command{}, &rootOptions{}, client, target, "old", "new")
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) || commandErr.Code != ErrorSlackAPI || !strings.Contains(commandErr.Message, "could not verify") {
+		t.Fatalf("presentation mismatch error = %#v", err)
+	}
+	if client.updateCalls != 1 {
+		t.Fatalf("presentation mismatch update calls = %d", client.updateCalls)
 	}
 }
 
@@ -204,7 +285,7 @@ func TestDecodeEditableMessageContentAcceptsSlackReturnedMetadataAndNormalizedFa
 	if err != nil {
 		t.Fatalf("decodeEditableMessageContent() error = %v", err)
 	}
-	if content.prefix != prefix || content.body != body {
+	if content.prefix != prefix || content.body != body || content.presentation != presentation.SlackManaged {
 		t.Fatalf("decoded content = %#v", content)
 	}
 }
@@ -318,7 +399,7 @@ func TestRunEditSupportsSlackRichTextAsCanonicalPlainBody(t *testing.T) {
 	if err := runEdit(&cobra.Command{}, &rootOptions{}, client, target, "old", "new"); err != nil {
 		t.Fatalf("runEdit() error = %v", err)
 	}
-	if client.updateRequest.Text != "new body" || client.updateRequest.Prefix != "" {
+	if client.updateRequest.Text != "new body" || client.updateRequest.Prefix != "" || client.updateRequest.Presentation != presentation.SlackManaged {
 		t.Fatalf("rich-text update request = %#v", client.updateRequest)
 	}
 }
@@ -455,6 +536,31 @@ func prefixedMessage(t *testing.T, userID, ts, prefix string, sections ...string
 	return &api.Message{
 		User: userID, Ts: ts, Text: prefix + "\n\n" + body.String(), Blocks: blocks,
 	}
+}
+
+func expandedMessage(t *testing.T, userID, ts, prefix string, sections ...string) *api.Message {
+	t.Helper()
+	blocks := make([]json.RawMessage, 0, len(sections)+1)
+	if prefix != "" {
+		blocks = append(blocks, rawJSON(t, map[string]interface{}{
+			"type":     "context",
+			"elements": []interface{}{map[string]string{"type": "mrkdwn", "text": prefix}},
+		}))
+	}
+	var body strings.Builder
+	for _, section := range sections {
+		body.WriteString(section)
+		blocks = append(blocks, rawJSON(t, map[string]interface{}{
+			"type":   "section",
+			"text":   map[string]string{"type": "mrkdwn", "text": section},
+			"expand": true,
+		}))
+	}
+	fallback := body.String()
+	if prefix != "" {
+		fallback = prefix + "\n\n" + fallback
+	}
+	return &api.Message{User: userID, Ts: ts, Text: fallback, Blocks: blocks}
 }
 
 func rawJSON(t *testing.T, value interface{}) json.RawMessage {

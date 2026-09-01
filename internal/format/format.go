@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/presentation"
 )
 
 var (
@@ -255,6 +256,10 @@ func FormatMessages(msgs []api.Message, channelName string, resolveUser func(str
 			fmt.Fprintf(&b, "  @%s: %s\n", author, resolvedText)
 		}
 
+		if mode, known := presentation.DetectBlocks(msg.Blocks); known {
+			fmt.Fprintf(&b, "    Presentation: %s\n", mode)
+		}
+
 		// Reactions
 		if len(msg.Reactions) > 0 {
 			// Group by user: user -> list of emoji names
@@ -469,16 +474,17 @@ func FormatJSON(data interface{}) (string, error) {
 
 // MessageJSON is the JSON representation of a message.
 type MessageJSON struct {
-	User       string         `json:"user"`
-	UserID     string         `json:"user_id"`
-	IsSelf     bool           `json:"is_self"`
-	Text       string         `json:"text"`
-	Ts         string         `json:"ts"`
-	Timestamp  string         `json:"timestamp"`
-	ThreadTs   string         `json:"thread_ts,omitempty"`
-	ReplyCount int            `json:"reply_count,omitempty"`
-	Reactions  []api.Reaction `json:"reactions,omitempty"`
-	Files      []FileJSON     `json:"files,omitempty"`
+	User                string            `json:"user"`
+	UserID              string            `json:"user_id"`
+	IsSelf              bool              `json:"is_self"`
+	Text                string            `json:"text"`
+	Ts                  string            `json:"ts"`
+	Timestamp           string            `json:"timestamp"`
+	ThreadTs            string            `json:"thread_ts,omitempty"`
+	ReplyCount          int               `json:"reply_count,omitempty"`
+	Reactions           []api.Reaction    `json:"reactions,omitempty"`
+	Files               []FileJSON        `json:"files,omitempty"`
+	MessagePresentation presentation.Mode `json:"message_presentation,omitempty"`
 }
 
 // MessagesToJSON converts messages to JSON-friendly structs.
@@ -497,17 +503,19 @@ func MessagesToJSON(msgs []api.Message, resolveUser func(string) string, selfID 
 			}
 		}
 		t := TsToTime(msg.Ts)
+		messagePresentation, _ := presentation.DetectBlocks(msg.Blocks)
 		out = append(out, MessageJSON{
-			User:       userName,
-			UserID:     msg.User,
-			IsSelf:     selfID != "" && msg.User == selfID,
-			Text:       msg.Text,
-			Ts:         msg.Ts,
-			Timestamp:  t.UTC().Format(time.RFC3339),
-			ThreadTs:   msg.ThreadTs,
-			ReplyCount: msg.ReplyCount,
-			Reactions:  msg.Reactions,
-			Files:      filesToJSON(msg.Files),
+			User:                userName,
+			UserID:              msg.User,
+			IsSelf:              selfID != "" && msg.User == selfID,
+			Text:                msg.Text,
+			Ts:                  msg.Ts,
+			Timestamp:           t.UTC().Format(time.RFC3339),
+			ThreadTs:            msg.ThreadTs,
+			ReplyCount:          msg.ReplyCount,
+			Reactions:           msg.Reactions,
+			Files:               filesToJSON(msg.Files),
+			MessagePresentation: messagePresentation,
 		})
 	}
 	return out

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/leezenn/slk/internal/presentation"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -83,8 +85,12 @@ func TestPostMessageReplyAndGetPermalink(t *testing.T) {
 			if got, want := req.Form.Get("text"), prefix+"\n\n"+text; got != want {
 				t.Fatalf("post fallback text = %q, want %q", got, want)
 			}
+			encodedBlocks := req.Form.Get("blocks")
+			if strings.Contains(encodedBlocks, `"expand"`) {
+				t.Fatalf("slack-managed blocks serialized expand: %s", encodedBlocks)
+			}
 			var blocks []slackBlock
-			if err := json.Unmarshal([]byte(req.Form.Get("blocks")), &blocks); err != nil {
+			if err := json.Unmarshal([]byte(encodedBlocks), &blocks); err != nil {
 				t.Fatalf("decoding post blocks: %v", err)
 			}
 			if len(blocks) != 2 || blocks[0].Type != "context" || len(blocks[0].Elements) != 1 || blocks[0].Elements[0].Type != "mrkdwn" || blocks[0].Elements[0].Text != prefix {
@@ -204,9 +210,60 @@ func TestPostMessageTopLevelOmitsThreadAndBlocksWhenPrefixIsEmpty(t *testing.T) 
 	}
 }
 
+func TestPostMessageAlwaysExpandedWithoutPrefix(t *testing.T) {
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := req.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Form.Get("text"); got != "hello" {
+			t.Fatalf("fallback text = %q, want hello", got)
+		}
+		var blocks []slackBlock
+		if err := json.Unmarshal([]byte(req.Form.Get("blocks")), &blocks); err != nil {
+			t.Fatal(err)
+		}
+		if len(blocks) != 1 || blocks[0].Type != "section" || !blocks[0].Expand || blocks[0].Text == nil || blocks[0].Text.Text != "hello" {
+			t.Fatalf("expanded blocks = %#v", blocks)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"channel":"C12345678","ts":"1700000001.000002"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	_, err := client.PostMessage(PostMessageRequest{
+		ChannelID:    "C12345678",
+		Text:         "hello",
+		Presentation: presentation.AlwaysExpanded,
+	})
+	if err != nil {
+		t.Fatalf("PostMessage() error = %v", err)
+	}
+}
+
+func TestPostMessageRejectsUnknownPresentationBeforeHTTP(t *testing.T) {
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected HTTP request to %s", req.URL.Path)
+		return nil, nil
+	})
+
+	_, err := client.PostMessage(PostMessageRequest{
+		ChannelID:    "C12345678",
+		Text:         "hello",
+		Presentation: presentation.Mode("forced"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown message presentation") {
+		t.Fatalf("PostMessage() error = %v", err)
+	}
+}
+
 func TestReplyBlocksSplitLongTextWithoutDataLoss(t *testing.T) {
 	text := strings.Repeat("å", slackSectionTextLimit+1)
-	blocks := messageBlocks(text, "prefix")
+	blocks := messageBlocks(text, "prefix", presentation.AlwaysExpanded)
 	if len(blocks) != 3 {
 		t.Fatalf("block count = %d, want one context and two sections", len(blocks))
 	}
@@ -218,6 +275,9 @@ func TestReplyBlocksSplitLongTextWithoutDataLoss(t *testing.T) {
 	}
 	if len([]rune(blocks[1].Text.Text)) > slackSectionTextLimit || len([]rune(blocks[2].Text.Text)) > slackSectionTextLimit {
 		t.Fatal("split section exceeded Slack's text limit")
+	}
+	if !blocks[1].Expand || !blocks[2].Expand {
+		t.Fatalf("expanded mode did not propagate across split sections: %#v", blocks)
 	}
 }
 
@@ -296,13 +356,15 @@ func TestGetReplyUsesExactTimestampBounds(t *testing.T) {
 
 func TestUpdateMessageReplacesCompleteContent(t *testing.T) {
 	tests := []struct {
-		name       string
-		prefix     string
-		wantText   string
-		wantBlocks string
+		name         string
+		prefix       string
+		presentation presentation.Mode
+		wantText     string
+		wantBlocks   string
 	}{
 		{name: "prefix blocks", prefix: "agent assisted", wantText: "agent assisted\n\nreplacement"},
 		{name: "empty prefix removes old blocks", wantText: "replacement", wantBlocks: "[]"},
+		{name: "expanded empty prefix keeps section block", presentation: presentation.AlwaysExpanded, wantText: "replacement"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -324,14 +386,29 @@ func TestUpdateMessageReplacesCompleteContent(t *testing.T) {
 					t.Fatalf("text = %q, want %q", got, test.wantText)
 				}
 				blocks := req.Form.Get("blocks")
+				if test.wantBlocks == "" && test.presentation == presentation.SlackManaged && strings.Contains(blocks, `"expand"`) {
+					t.Fatalf("slack-managed update serialized expand: %s", blocks)
+				}
+				if test.presentation == presentation.AlwaysExpanded && !strings.Contains(blocks, `"expand":true`) {
+					t.Fatalf("always-expanded update omitted expand=true: %s", blocks)
+				}
 				if test.wantBlocks != "" {
 					if blocks != test.wantBlocks {
 						t.Fatalf("blocks = %q, want %q", blocks, test.wantBlocks)
 					}
 				} else {
 					var decoded []slackBlock
-					if err := json.Unmarshal([]byte(blocks), &decoded); err != nil || len(decoded) != 2 || decoded[0].Type != "context" || decoded[1].Text == nil || decoded[1].Text.Text != "replacement" {
-						t.Fatalf("replacement blocks = %#v, error %v", decoded, err)
+					if err := json.Unmarshal([]byte(blocks), &decoded); err != nil {
+						t.Fatal(err)
+					}
+					sectionIndex := 1
+					if test.prefix == "" {
+						sectionIndex = 0
+					}
+					if len(decoded) != sectionIndex+1 || sectionIndex == 1 && decoded[0].Type != "context" ||
+						decoded[sectionIndex].Text == nil || decoded[sectionIndex].Text.Text != "replacement" ||
+						decoded[sectionIndex].Expand != (test.presentation == presentation.AlwaysExpanded) {
+						t.Fatalf("replacement blocks = %#v", decoded)
 					}
 				}
 				return &http.Response{
@@ -344,7 +421,7 @@ func TestUpdateMessageReplacesCompleteContent(t *testing.T) {
 
 			result, err := client.UpdateMessage(UpdateMessageRequest{
 				ChannelID: "C12345678", MessageTs: "1700000001.000002",
-				Text: "replacement", Prefix: test.prefix,
+				Text: "replacement", Prefix: test.prefix, Presentation: test.presentation,
 			})
 			if err != nil || result.Channel != "C12345678" || result.Ts != "1700000001.000002" {
 				t.Fatalf("UpdateMessage() = %#v, %v", result, err)

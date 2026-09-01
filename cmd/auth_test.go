@@ -29,7 +29,7 @@ func TestAuthAccessSummary(t *testing.T) {
 		"groups:history", "groups:read",
 		"im:history", "im:read",
 		"mpim:history", "mpim:read",
-		"reactions:read", "search:read", "users:read", "files:read",
+		"search:read", "users:read", "files:read",
 	}
 
 	tests := []struct {
@@ -60,7 +60,7 @@ func TestAuthAccessSummary(t *testing.T) {
 				"groups:history", "groups:read",
 				"im:history", "im:read",
 				"mpim:history", "mpim:read",
-				"reactions:read", "users:read",
+				"users:read",
 			},
 			want: []string{
 				"Access is limited: workspace discovery and file downloads may not work.",

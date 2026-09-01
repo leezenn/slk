@@ -8,6 +8,7 @@ import (
 
 	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/format"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
@@ -23,8 +24,9 @@ type editClient interface {
 }
 
 type editableMessageContent struct {
-	body   string
-	prefix string
+	body         string
+	prefix       string
+	presentation presentation.Mode
 }
 
 type editableBlock struct {
@@ -32,6 +34,7 @@ type editableBlock struct {
 	BlockID  string            `json:"block_id,omitempty"`
 	Text     *editableText     `json:"text,omitempty"`
 	Elements []json.RawMessage `json:"elements,omitempty"`
+	Expand   *bool             `json:"expand,omitempty"`
 }
 
 type editableText struct {
@@ -55,12 +58,15 @@ remove the fragment. Existing slk message prefixes and attachments are preserved
 Supported message layouts:
   - plain messages and native Slack rich-text messages
   - slk-generated context-prefix plus mrkdwn section-body messages
-The known Slack-owned block_id and verbatim fields are accepted. Other custom
-block layouts are refused.
+  - slk-generated prefixless sections with expand:true
+The known Slack-owned block_id, verbatim, and section expand fields are accepted.
+Other custom or mixed block layouts are refused. edit has no presentation override;
+it preserves the target's normalized message presentation.
 
 JSON success contract (--json):
   {"ok":true,"edited":true,"operation":"replace_exact",
-   "target_permalink":"...","open_command":"...","formatting_applied":[]}
+   "target_permalink":"...","open_command":"...","formatting_applied":[],
+   "message_presentation":"slack-managed"}
 
 Contract drift:
 If this JSON contract differs or a normally supported message is refused, stop.
@@ -145,10 +151,11 @@ func runEdit(cmd *cobra.Command, rootOptions *rootOptions, client editClient, ta
 		)
 	}
 	if _, err := client.UpdateMessage(api.UpdateMessageRequest{
-		ChannelID: target.channelID,
-		MessageTs: target.messageTs,
-		Text:      patched,
-		Prefix:    content.prefix,
+		ChannelID:    target.channelID,
+		MessageTs:    target.messageTs,
+		Text:         patched,
+		Prefix:       content.prefix,
+		Presentation: content.presentation,
 	}); err != nil {
 		return messageMutationError(err, mutationKindEdit)
 	}
@@ -158,22 +165,24 @@ func runEdit(cmd *cobra.Command, rootOptions *rootOptions, client editClient, ta
 		return editVerificationError()
 	}
 	verifiedContent, err := decodeEditableMessageContent(verified)
-	if err != nil || verifiedContent.body != patched || verifiedContent.prefix != content.prefix {
+	if err != nil || verifiedContent.body != patched || verifiedContent.prefix != content.prefix || verifiedContent.presentation != content.presentation {
 		return editVerificationError()
 	}
 
 	if rootOptions.json {
 		return writeJSON(cmd, map[string]interface{}{
-			"ok":                 true,
-			"edited":             true,
-			"operation":          "replace_exact",
-			"target_permalink":   target.permalink,
-			"open_command":       format.OpenCommand(target.permalink),
-			"formatting_applied": formattingReceipt(formattedEdit.Applied),
+			"ok":                   true,
+			"edited":               true,
+			"operation":            "replace_exact",
+			"target_permalink":     target.permalink,
+			"open_command":         format.OpenCommand(target.permalink),
+			"formatting_applied":   formattingReceipt(formattedEdit.Applied),
+			"message_presentation": content.presentation,
 		})
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Message edited.")
 	writeFormattingNotice(cmd, formattedEdit.Applied)
+	writePreservedPresentation(cmd, content.presentation)
 	fmt.Fprintln(cmd.OutOrStdout(), target.permalink)
 	fmt.Fprintf(cmd.OutOrStdout(), "Open: %s\n", format.OpenCommand(target.permalink))
 	return nil
@@ -181,41 +190,67 @@ func runEdit(cmd *cobra.Command, rootOptions *rootOptions, client editClient, ta
 
 func decodeEditableMessageContent(message *api.Message) (editableMessageContent, error) {
 	if len(message.Blocks) == 0 || allBlocksHaveType(message.Blocks, "rich_text") {
-		return editableMessageContent{body: message.Text}, nil
-	}
-	if len(message.Blocks) < 2 {
-		return editableMessageContent{}, fmt.Errorf("unsupported block layout")
+		return editableMessageContent{
+			body:         message.Text,
+			presentation: presentation.SlackManaged,
+		}, nil
 	}
 
-	contextBlock, err := decodeEditableBlock(message.Blocks[0], "type", "block_id", "elements")
-	if err != nil {
-		return editableMessageContent{}, fmt.Errorf("context block: %w", err)
+	mode, known := presentation.DetectBlocks(message.Blocks)
+	if !known {
+		return editableMessageContent{}, fmt.Errorf("unsupported or mixed block presentation")
 	}
-	if contextBlock.Type != "context" || len(contextBlock.Elements) != 1 {
-		return editableMessageContent{}, fmt.Errorf("context block must contain exactly one context element")
+
+	sectionStart := 0
+	prefixText := ""
+	var firstHeader struct {
+		Type string `json:"type"`
 	}
-	prefix, err := decodeEditableText(contextBlock.Elements[0])
-	if err != nil {
-		return editableMessageContent{}, fmt.Errorf("context element: %w", err)
+	if err := json.Unmarshal(message.Blocks[0], &firstHeader); err != nil {
+		return editableMessageContent{}, fmt.Errorf("first block: %w", err)
 	}
-	if prefix.Type != "mrkdwn" || prefix.Text == "" {
-		return editableMessageContent{}, fmt.Errorf("context element must be non-empty mrkdwn")
+	if firstHeader.Type == "context" {
+		contextBlock, err := decodeEditableBlock(message.Blocks[0], "type", "block_id", "elements")
+		if err != nil {
+			return editableMessageContent{}, fmt.Errorf("context block: %w", err)
+		}
+		if len(contextBlock.Elements) != 1 {
+			return editableMessageContent{}, fmt.Errorf("context block must contain exactly one context element")
+		}
+		prefix, err := decodeEditableText(contextBlock.Elements[0])
+		if err != nil {
+			return editableMessageContent{}, fmt.Errorf("context element: %w", err)
+		}
+		if prefix.Type != "mrkdwn" || prefix.Text == "" {
+			return editableMessageContent{}, fmt.Errorf("context element must be non-empty mrkdwn")
+		}
+		prefixText = prefix.Text
+		sectionStart = 1
+	} else if mode != presentation.AlwaysExpanded {
+		return editableMessageContent{}, fmt.Errorf("prefixless sections must be always-expanded")
+	}
+	if sectionStart >= len(message.Blocks) {
+		return editableMessageContent{}, fmt.Errorf("message must contain at least one section block")
 	}
 
 	var body strings.Builder
-	for index, rawBlock := range message.Blocks[1:] {
-		section, err := decodeEditableBlock(rawBlock, "type", "block_id", "text")
+	for index, rawBlock := range message.Blocks[sectionStart:] {
+		section, err := decodeEditableBlock(rawBlock, "type", "block_id", "text", "expand")
 		if err != nil {
-			return editableMessageContent{}, fmt.Errorf("section block %d: %w", index+1, err)
+			return editableMessageContent{}, fmt.Errorf("section block %d: %w", index+sectionStart, err)
 		}
 		if section.Type != "section" || section.Text == nil || section.Text.Type != "mrkdwn" {
-			return editableMessageContent{}, fmt.Errorf("section block %d must contain mrkdwn text", index+1)
+			return editableMessageContent{}, fmt.Errorf("section block %d must contain mrkdwn text", index+sectionStart)
 		}
 		body.WriteString(section.Text.Text)
 	}
 	// Slack normalizes fallback whitespace when returning block messages. The exact
 	// recognized blocks are the rendered content and therefore authoritative.
-	return editableMessageContent{body: body.String(), prefix: prefix.Text}, nil
+	return editableMessageContent{
+		body:         body.String(),
+		prefix:       prefixText,
+		presentation: mode,
+	}, nil
 }
 
 func allBlocksHaveType(blocks []json.RawMessage, blockType string) bool {

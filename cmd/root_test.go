@@ -14,6 +14,7 @@ import (
 	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
+	"github.com/leezenn/slk/internal/presentation"
 )
 
 type fakeConfigStore struct {
@@ -172,7 +173,7 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 }
 
 var commandNames = []string{
-	"activity", "auth", "channels", "config", "delete", "download", "edit", "members", "notes", "open",
+	"activity", "auth", "channels", "config", "delete", "download", "edit", "members", "open",
 	"read", "recent", "replace", "reply", "search", "thread", "users", "whoami", "write",
 }
 
@@ -259,6 +260,79 @@ func TestEveryCommandHelpIsIsolated(t *testing.T) {
 	}
 }
 
+func TestJSONHelpLabelsSupportBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "root", args: []string{"--help"}, want: "Output structured success data where supported"},
+		{name: "auth", args: []string{"auth", "--help"}, want: "Authentication output is semantic text; the inherited --json flag has no effect."},
+		{name: "setup", args: []string{"config", "setup", "--help"}, want: "Setup does not support the inherited --json flag."},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			code, stdout, stderr := runIsolated(t, forbiddenDependencies(t), context.Background(), test.args...)
+			if code != 0 || stderr != "" || !strings.Contains(stdout, test.want) {
+				t.Fatalf("help = code %d stdout %q stderr %q, want %q", code, stdout, stderr, test.want)
+			}
+		})
+	}
+}
+
+func TestAuthJSONFlagUsesSemanticText(t *testing.T) {
+	store := &fakeCredentialStore{getResult: auth.Result{Token: "test", Source: auth.SourceEnv}}
+	code, stdout, stderr := runIsolated(t, isolatedDependencies(store), context.Background(), "--json", "auth")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "Status: configured") || strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+		t.Fatalf("auth --json = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	if store.getCalls != 1 {
+		t.Fatalf("credential store Get calls = %d, want one", store.getCalls)
+	}
+}
+
+func TestRemovedNotesCommandIsUnavailable(t *testing.T) {
+	store := &fakeCredentialStore{}
+	deps := isolatedDependencies(store)
+
+	code, stdout, stderr := runIsolated(t, deps, context.Background(), "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("root help = code %d stderr %q", code, stderr)
+	}
+	if strings.Contains(stdout, "\n  notes ") {
+		t.Fatalf("root help still exposes notes: %q", stdout)
+	}
+
+	code, stdout, stderr = runIsolated(t, deps, context.Background(), "notes")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, `unknown command "notes"`) {
+		t.Fatalf("notes invocation = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	if store.getCalls != 0 {
+		t.Fatalf("credential store Get calls = %d, want zero", store.getCalls)
+	}
+}
+
+func TestPresentationHelpReflectsEffectiveConfiguration(t *testing.T) {
+	mode := presentation.AlwaysExpanded
+	deps := isolatedDependencies(&fakeCredentialStore{})
+	deps.Configuration = &fakeConfigStore{document: config.Document{MessagePresentation: &mode}}
+
+	for _, args := range [][]string{{"--help"}, {"write", "--help"}, {"reply", "--help"}, {"replace", "--help"}} {
+		code, stdout, stderr := runIsolated(t, deps, context.Background(), args...)
+		if code != 0 || stderr != "" || !strings.Contains(stdout, "Effective default: always-expanded") ||
+			!strings.Contains(stdout, "--presentation") {
+			t.Fatalf("presentation help %v = code %d stdout %q stderr %q", args, code, stdout, stderr)
+		}
+	}
+
+	code, stdout, stderr := runIsolated(t, deps, context.Background(), "edit", "--help")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "preserves the target's normalized message presentation") ||
+		strings.Contains(stdout, "--presentation string") {
+		t.Fatalf("edit presentation help = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+}
+
 func TestRootDistinguishesEditFromReplace(t *testing.T) {
 	code, stdout, stderr := runIsolated(t, forbiddenDependencies(t), context.Background(), "--help")
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "\n  edit ") || !strings.Contains(stdout, "\n  replace ") {
@@ -290,7 +364,6 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		{name: "edit replacement", args: []string{"edit", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--match", "current"}},
 		{name: "edit permalink", args: []string{"edit", "not-a-permalink", "--match", "current", "--with", "replacement"}},
 		{name: "members shape", args: []string{"members"}},
-		{name: "notes shape", args: []string{"notes", "extra"}},
 		{name: "open shape", args: []string{"open"}},
 		{name: "read shape", args: []string{"read"}},
 		{name: "recent shape", args: []string{"recent", "extra"}},
@@ -300,12 +373,16 @@ func TestInvalidInputFailsBeforeDependencies(t *testing.T) {
 		{name: "replace shape", args: []string{"replace"}},
 		{name: "replace text", args: []string{"replace", "https://workspace.slack.com/archives/C12345678/p1705312325000100"}},
 		{name: "replace permalink", args: []string{"replace", "not-a-permalink", "--text", "complete replacement"}},
+		{name: "replace presentation", args: []string{"replace", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--text", "complete replacement", "--presentation", "forced"}},
 		{name: "reply shape", args: []string{"reply"}},
 		{name: "reply text", args: []string{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100"}},
 		{name: "reply permalink", args: []string{"reply", "not-a-permalink", "--text", "hello"}},
+		{name: "reply presentation", args: []string{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--text", "hello", "--presentation", "forced"}},
 		{name: "write shape", args: []string{"write"}},
 		{name: "write text", args: []string{"write", "general"}},
 		{name: "write target", args: []string{"write", "", "--text", "hello"}},
+		{name: "write presentation", args: []string{"write", "general", "--text", "hello", "--presentation", "forced"}},
+		{name: "edit presentation override", args: []string{"edit", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--match", "old", "--with", "new", "--presentation", "always-expanded"}},
 		{name: "search shape", args: []string{"search"}},
 		{name: "thread shape", args: []string{"thread", "general"}},
 		{name: "users shape", args: []string{"users", "one", "two"}},
@@ -458,7 +535,7 @@ func TestReplyConfigFailureStopsBeforeCredentialAccess(t *testing.T) {
 func TestCanceledContextStopsEveryCommandBeforeDependencies(t *testing.T) {
 	tests := [][]string{
 		{"activity"}, {"auth"}, {"channels"}, {"download", "F0123456789"}, {"members", "general"},
-		{"notes"}, {"open", "https://workspace.slack.com/archives/C12345678/p1705312325000100"},
+		{"open", "https://workspace.slack.com/archives/C12345678/p1705312325000100"},
 		{"read", "general"},
 		{"recent"},
 		{"reply", "https://workspace.slack.com/archives/C12345678/p1705312325000100", "--text", "hello"},

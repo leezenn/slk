@@ -3,12 +3,14 @@ package cmd
 import (
 	"strings"
 
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
 type writeOptions struct {
-	text string
+	text         string
+	presentation string
 }
 
 type writeClient interface {
@@ -16,7 +18,7 @@ type writeClient interface {
 	targetResolver
 }
 
-func newWriteCommand(deps Dependencies, rootOptions *rootOptions, prefix string, formatting ...textformat.Module) *cobra.Command {
+func newWriteCommand(deps Dependencies, rootOptions *rootOptions, prefix string, configuredPresentation presentation.Mode, formatting ...textformat.Module) *cobra.Command {
 	options := &writeOptions{}
 	command := &cobra.Command{
 		Use:   "write <channel-or-user>",
@@ -27,18 +29,23 @@ The target may be a channel name or ID, an existing DM handle such as @alex,
 a Slack user ID, or a DM channel ID. The command posts immediately. Confirm the
 exact target and text before invoking it. Messages include the configured message
 prefix as a small context line unless message_prefix is explicitly empty. Slack
-must grant the current user token chat:write.` + formattingHelp(formatting, "The --text value"),
+must grant the current user token chat:write.` + presentationHelp(configuredPresentation) + formattingHelp(formatting, "The --text value"),
 		Example: `  slk write general --text 'The deployment is complete.'
   slk write @alex --text 'Could you review the latest draft?'`,
 		Args: argumentValidator(cobra.ExactArgs(1)),
 	}
 	command.Flags().StringVar(&options.text, "text", "", "Exact message text")
+	addPresentationFlag(command, &options.presentation)
 	command.RunE = func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(args[0]) == "" {
 			return invalidArgument(cmd, "target must not be empty")
 		}
 		if strings.TrimSpace(options.text) == "" {
 			return invalidArgument(cmd, "--text must contain the message")
+		}
+		mode, err := resolvePresentation(cmd, options.presentation, configuredPresentation)
+		if err != nil {
+			return err
 		}
 		if err := checkContext(cmd.Context()); err != nil {
 			return err
@@ -47,12 +54,12 @@ must grant the current user token chat:write.` + formattingHelp(formatting, "The
 		if err != nil {
 			return err
 		}
-		return runWrite(cmd, rootOptions, client, args[0], options.text, prefix, formatting...)
+		return runWrite(cmd, rootOptions, client, args[0], options.text, prefix, mode, formatting...)
 	}
 	return command
 }
 
-func runWrite(cmd *cobra.Command, rootOptions *rootOptions, client writeClient, target, text, prefix string, modules ...textformat.Module) error {
+func runWrite(cmd *cobra.Command, rootOptions *rootOptions, client writeClient, target, text, prefix string, mode presentation.Mode, modules ...textformat.Module) error {
 	channelID, _, err := resolveTarget(client, target)
 	if err != nil {
 		return slackAPIError(err)
@@ -60,5 +67,5 @@ func runWrite(cmd *cobra.Command, rootOptions *rootOptions, client writeClient, 
 	formatted := textformat.Apply(text, modules)
 	return runMessagePost(cmd, rootOptions, client, messagePostTarget{
 		channelID: channelID,
-	}, formatted.Text, prefix, postModeWrite, formatted.Applied)
+	}, formatted.Text, prefix, mode, postModeWrite, formatted.Applied)
 }

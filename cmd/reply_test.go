@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
@@ -41,14 +42,15 @@ func TestRunReplyReturnsCanonicalReceipt(t *testing.T) {
 	command.SetErr(&stderr)
 	target := replyTarget{channelID: "C12345678", threadTs: "1700000000.000001"}
 
-	if err := runReply(command, &rootOptions{}, client, target, "We will ship the fix tomorrow.", ":mechanical_arm: agent assisted response.", false); err != nil {
+	if err := runReply(command, &rootOptions{}, client, target, "We will ship the fix tomorrow.", ":mechanical_arm: agent assisted response.", presentation.AlwaysExpanded, false); err != nil {
 		t.Fatalf("runReply returned error: %v", err)
 	}
 	wantRequest := api.PostMessageRequest{
-		ChannelID: target.channelID,
-		ThreadTs:  target.threadTs,
-		Text:      "We will ship the fix tomorrow.",
-		Prefix:    ":mechanical_arm: agent assisted response.",
+		ChannelID:    target.channelID,
+		ThreadTs:     target.threadTs,
+		Text:         "We will ship the fix tomorrow.",
+		Prefix:       ":mechanical_arm: agent assisted response.",
+		Presentation: presentation.AlwaysExpanded,
 	}
 	if client.request != wantRequest {
 		t.Fatalf("posted request = %#v, want %#v", client.request, wantRequest)
@@ -56,7 +58,7 @@ func TestRunReplyReturnsCanonicalReceipt(t *testing.T) {
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	for _, want := range []string{"Reply posted.", permalink, "Open: slk open '" + permalink + "'"} {
+	for _, want := range []string{"Reply posted.", "Presentation requested: always-expanded", permalink, "Open: slk open '" + permalink + "'"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("receipt omitted %q: %q", want, stdout.String())
 		}
@@ -86,7 +88,7 @@ func TestRunReplyRequestsConversationBroadcast(t *testing.T) {
 			command.SetOut(&stdout)
 			target := replyTarget{channelID: "C12345678", threadTs: "1700000000.000001"}
 
-			if err := runReply(command, &rootOptions{json: test.json}, client, target, "important update", "prefix", true); err != nil {
+			if err := runReply(command, &rootOptions{json: test.json}, client, target, "important update", "prefix", presentation.SlackManaged, true); err != nil {
 				t.Fatalf("runReply returned error: %v", err)
 			}
 			if !client.request.ReplyBroadcast {
@@ -105,7 +107,7 @@ func TestReplyHelpDocumentsConversationBroadcastWithoutCredentials(t *testing.T)
 		t.Fatalf("reply help = code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 	normalized := strings.Join(strings.Fields(stdout), " ")
-	for _, want := range []string{"--also-send-to-conversation", "surface in the main channel or DM timeline", "message remains in its thread"} {
+	for _, want := range []string{"--also-send-to-conversation", "--presentation", "Effective default: slack-managed", "surface in the main channel or DM timeline", "message remains in its thread"} {
 		if !strings.Contains(normalized, want) {
 			t.Fatalf("reply help omitted %q: %q", want, stdout)
 		}
@@ -129,6 +131,7 @@ func TestRunReplyAppliesEnabledFormattingInJSONReceipt(t *testing.T) {
 		target,
 		"before —after",
 		"prefix",
+		presentation.SlackManaged,
 		false,
 		textformat.ModuleEmDashToSpacedHyphen,
 	); err != nil {
@@ -153,10 +156,10 @@ func TestRunReplyReturnsJSONReceipt(t *testing.T) {
 	command.SetOut(&stdout)
 	target := replyTarget{channelID: "C12345678", threadTs: "1700000000.000001"}
 
-	if err := runReply(command, &rootOptions{json: true}, client, target, "hello", "prefix", false); err != nil {
+	if err := runReply(command, &rootOptions{json: true}, client, target, "hello", "prefix", presentation.SlackManaged, false); err != nil {
 		t.Fatalf("runReply returned error: %v", err)
 	}
-	for _, want := range []string{`"posted": true`, `"permalink": "` + permalink + `"`, `"open_command": "slk open '` + permalink + `'"`, `"formatting_applied": []`, `"reply_broadcast_requested": false`} {
+	for _, want := range []string{`"posted": true`, `"permalink": "` + permalink + `"`, `"open_command": "slk open '` + permalink + `'"`, `"formatting_applied": []`, `"message_presentation": "slack-managed"`, `"reply_broadcast_requested": false`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())
 		}
@@ -174,10 +177,10 @@ func TestRunReplyFallsBackWhenPermalinkLookupFails(t *testing.T) {
 	command.SetErr(&stderr)
 	target := replyTarget{channelID: "C12345678", threadTs: "1700000000.000001"}
 
-	if err := runReply(command, &rootOptions{}, client, target, "hello", "prefix", false); err != nil {
+	if err := runReply(command, &rootOptions{}, client, target, "hello", "prefix", presentation.SlackManaged, false); err != nil {
 		t.Fatalf("runReply returned error: %v", err)
 	}
-	for _, want := range []string{"Reply posted.", "Channel: C12345678", "Timestamp: 1700000001.000002", "Thread: slk thread C12345678 1700000000.000001"} {
+	for _, want := range []string{"Reply posted.", "Presentation requested: slack-managed", "Channel: C12345678", "Timestamp: 1700000001.000002", "Thread: slk thread C12345678 1700000000.000001"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("fallback receipt omitted %q: %q", want, stdout.String())
 		}

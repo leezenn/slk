@@ -7,11 +7,15 @@ import (
 
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
 
-const messagePrefixPreference = "message-prefix"
+const (
+	messagePrefixPreference       = "message-prefix"
+	messagePresentationPreference = "message-presentation"
+)
 
 func newConfigCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
 	command := &cobra.Command{
@@ -67,49 +71,74 @@ func newConfigPathCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Co
 
 func newConfigSetCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:   "set message-prefix <text>",
+		Use:   "set <message-prefix|message-presentation> <value>",
 		Short: "Set one configuration preference",
-		Long: `Set the message prefix rendered before new and replaced messages.
+		Long: `Set one message-expression preference.
 
-An explicitly empty text value disables the prefix. Use
-'slk config reset message-prefix' to return to the built-in default.`,
+An explicitly empty message-prefix value disables the prefix. The
+message-presentation value must be slack-managed or always-expanded. Use
+'slk config reset <preference>' to return that preference to its built-in default.`,
 		Args: argumentValidator(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if args[0] != messagePrefixPreference {
-				return invalidArgument(cmd, "unknown preference "+args[0])
+			preference := args[0]
+			var mode presentation.Mode
+			switch preference {
+			case messagePrefixPreference:
+			case messagePresentationPreference:
+				var known bool
+				mode, known = presentation.Parse(args[1])
+				if !known {
+					return invalidArgument(cmd, "message-presentation must be slack-managed or always-expanded")
+				}
+			default:
+				return invalidArgument(cmd, "unknown preference "+preference)
 			}
+
 			document, store, path, err := loadConfigDocument(deps)
 			if err != nil {
 				return err
 			}
-			prefix := args[1]
-			document.MessagePrefix = &prefix
+			action := "message prefix updated"
+			if preference == messagePrefixPreference {
+				prefix := args[1]
+				document.MessagePrefix = &prefix
+			} else {
+				document.MessagePresentation = &mode
+				action = "message presentation updated"
+			}
 			if err := saveConfigDocument(store, document); err != nil {
 				return err
 			}
-			return writeConfigReceipt(cmd, rootOptions, "message prefix updated", path, document.Effective())
+			return writeConfigReceipt(cmd, rootOptions, action, path, document.Effective())
 		},
 	}
 }
 
 func newConfigResetCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:   "reset message-prefix",
+		Use:   "reset <message-prefix|message-presentation>",
 		Short: "Reset one preference to its built-in default",
 		Args:  argumentValidator(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if args[0] != messagePrefixPreference {
-				return invalidArgument(cmd, "unknown preference "+args[0])
+			preference := args[0]
+			if preference != messagePrefixPreference && preference != messagePresentationPreference {
+				return invalidArgument(cmd, "unknown preference "+preference)
 			}
 			document, store, path, err := loadConfigDocument(deps)
 			if err != nil {
 				return err
 			}
-			document.MessagePrefix = nil
+			action := "message prefix reset"
+			if preference == messagePrefixPreference {
+				document.MessagePrefix = nil
+			} else {
+				document.MessagePresentation = nil
+				action = "message presentation reset"
+			}
 			if err := saveConfigDocument(store, document); err != nil {
 				return err
 			}
-			return writeConfigReceipt(cmd, rootOptions, "message prefix reset", path, document.Effective())
+			return writeConfigReceipt(cmd, rootOptions, action, path, document.Effective())
 		},
 	}
 }
@@ -321,15 +350,17 @@ func runConfigSummary(cmd *cobra.Command, deps Dependencies, rootOptions *rootOp
 
 	if rootOptions.json {
 		payload := map[string]interface{}{
-			"ok":                    true,
-			"path":                  path,
-			"disabled":              settings.Disabled,
-			"message_prefix":        settings.MessagePrefix,
-			"message_prefix_source": prefixSource(document),
-			"deny_mutations":        mutationStrings(settings.DeniedMutations),
-			"formatting":            formattingStrings(settings.Formatting),
-			"auth_configured":       configured,
-			"auth_ignored":          configured && settings.Disabled,
+			"ok":                          true,
+			"path":                        path,
+			"disabled":                    settings.Disabled,
+			"message_prefix":              settings.MessagePrefix,
+			"message_prefix_source":       prefixSource(document),
+			"message_presentation":        settings.MessagePresentation,
+			"message_presentation_source": presentationSource(document),
+			"deny_mutations":              mutationStrings(settings.DeniedMutations),
+			"formatting":                  formattingStrings(settings.Formatting),
+			"auth_configured":             configured,
+			"auth_ignored":                configured && settings.Disabled,
 		}
 		if configured {
 			payload["auth_source"] = authResult.Source
@@ -352,6 +383,7 @@ func runConfigSummary(cmd *cobra.Command, deps Dependencies, rootOptions *rootOp
 		fmt.Fprintln(cmd.OutOrStdout(), "Authentication: not configured")
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Message prefix (%s): %q\n", prefixSource(document), settings.MessagePrefix)
+	fmt.Fprintf(cmd.OutOrStdout(), "Message presentation (%s): %s\n", presentationSource(document), settings.MessagePresentation)
 	fmt.Fprintf(cmd.OutOrStdout(), "Enabled formatting: %s\n", textformat.List(settings.Formatting))
 	fmt.Fprintf(cmd.OutOrStdout(), "Denied mutations: %s\n", mutationList(settings.DeniedMutations))
 	if settings.Disabled {
@@ -412,17 +444,19 @@ func setFormattingEnabled(document *config.Document, module textformat.Module, e
 func writeConfigReceipt(cmd *cobra.Command, rootOptions *rootOptions, action, path string, settings config.Settings) error {
 	if rootOptions.json {
 		return writeJSON(cmd, map[string]interface{}{
-			"ok":             true,
-			"action":         action,
-			"path":           path,
-			"disabled":       settings.Disabled,
-			"message_prefix": settings.MessagePrefix,
-			"deny_mutations": mutationStrings(settings.DeniedMutations),
-			"formatting":     formattingStrings(settings.Formatting),
+			"ok":                   true,
+			"action":               action,
+			"path":                 path,
+			"disabled":             settings.Disabled,
+			"message_prefix":       settings.MessagePrefix,
+			"message_presentation": settings.MessagePresentation,
+			"deny_mutations":       mutationStrings(settings.DeniedMutations),
+			"formatting":           formattingStrings(settings.Formatting),
 		})
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s.\n", strings.ToUpper(action[:1])+action[1:])
 	fmt.Fprintf(cmd.OutOrStdout(), "Configuration: %s\n", path)
+	fmt.Fprintf(cmd.OutOrStdout(), "Message presentation: %s\n", settings.MessagePresentation)
 	return nil
 }
 
@@ -432,6 +466,13 @@ func prefixSource(document config.Document) string {
 	}
 	if *document.MessagePrefix == "" {
 		return "disabled"
+	}
+	return "custom"
+}
+
+func presentationSource(document config.Document) string {
+	if document.MessagePresentation == nil {
+		return "default"
 	}
 	return "custom"
 }

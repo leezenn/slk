@@ -1,11 +1,13 @@
 package format
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/presentation"
 )
 
 const (
@@ -135,6 +137,56 @@ func TestMessagesToJSONSetsIdentityAndDownloadCommand(t *testing.T) {
 	}
 }
 
+func TestMessagePresentationNormalizationInPlainAndJSONOutput(t *testing.T) {
+	contextBlock := formatRawBlock(t, map[string]interface{}{
+		"type":     "context",
+		"elements": []interface{}{map[string]string{"type": "mrkdwn", "text": "prefix"}},
+	})
+	section := func(expand interface{}) json.RawMessage {
+		block := map[string]interface{}{
+			"type": "section",
+			"text": map[string]string{"type": "mrkdwn", "text": "body"},
+		}
+		if expand != nil {
+			block["expand"] = expand
+		}
+		return formatRawBlock(t, block)
+	}
+	tests := []struct {
+		name   string
+		blocks []json.RawMessage
+		want   presentation.Mode
+	}{
+		{name: "expanded", blocks: []json.RawMessage{contextBlock, section(true)}, want: presentation.AlwaysExpanded},
+		{name: "managed omitted", blocks: []json.RawMessage{contextBlock, section(nil)}, want: presentation.SlackManaged},
+		{name: "managed false", blocks: []json.RawMessage{contextBlock, section(false)}, want: presentation.SlackManaged},
+		{name: "native rich text", blocks: []json.RawMessage{formatRawBlock(t, map[string]interface{}{"type": "rich_text", "elements": []interface{}{}})}, want: presentation.SlackManaged},
+		{name: "mixed omitted", blocks: []json.RawMessage{contextBlock, section(true), section(false)}},
+		{name: "custom omitted", blocks: []json.RawMessage{formatRawBlock(t, map[string]interface{}{"type": "actions", "elements": []interface{}{}})}},
+		{name: "absent omitted"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			messages := []api.Message{{User: testOtherID, Text: "body", Ts: "1700000001.000000", Blocks: test.blocks}}
+			plain := FormatMessages(messages, "general", testResolveUser, testSelfID)
+			jsonMessages := MessagesToJSON(messages, testResolveUser, testSelfID)
+			if len(jsonMessages) != 1 {
+				t.Fatalf("MessagesToJSON() length = %d", len(jsonMessages))
+			}
+			if test.want == "" {
+				if strings.Contains(plain, "Presentation:") || jsonMessages[0].MessagePresentation != "" {
+					t.Fatalf("unknown presentation was guessed: plain %q JSON %#v", plain, jsonMessages[0])
+				}
+				return
+			}
+			if !strings.Contains(plain, "Presentation: "+string(test.want)) || jsonMessages[0].MessagePresentation != test.want {
+				t.Fatalf("presentation output = plain %q JSON %#v, want %q", plain, jsonMessages[0], test.want)
+			}
+		})
+	}
+}
+
 func TestFormatSearchResultsMarksAuthenticatedUser(t *testing.T) {
 	const permalink = "https://example.slack.com/archives/C12345678/p1700000000000000?thread_ts=1700000000.000000&cid=C12345678"
 	result := &api.SearchResult{}
@@ -205,4 +257,20 @@ func TestSearchMatchesToJSONSetsIdentityAndDownloadCommand(t *testing.T) {
 	if got[1].OpenCommand != "" {
 		t.Fatalf("missing permalink produced open_command %q", got[1].OpenCommand)
 	}
+	encoded, err := FormatJSON(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(encoded, "message_presentation") {
+		t.Fatalf("search-derived JSON guessed presentation: %s", encoded)
+	}
+}
+
+func formatRawBlock(t *testing.T, value interface{}) json.RawMessage {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }

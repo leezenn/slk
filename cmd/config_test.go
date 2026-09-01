@@ -9,6 +9,7 @@ import (
 
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 )
 
@@ -43,6 +44,7 @@ func TestConfigSummaryIsReadOnlyAndSecretSafe(t *testing.T) {
 		"Tool: enabled",
 		"Authentication: configured (keychain, xoxp-sec...)",
 		`Message prefix (custom): "Reviewed by operator."`,
+		"Message presentation (default): slack-managed",
 		"Enabled formatting: none",
 		"Denied mutations: write",
 	} {
@@ -63,7 +65,8 @@ func TestConfigSummaryJSONOmitsTokenMaterial(t *testing.T) {
 		getResult: auth.Result{Token: "xoxp-secret-value", Source: auth.SourceKeychain},
 	}
 	code, stdout, stderr := runIsolated(t, isolatedDependencies(credentials), context.Background(), "--json", "config")
-	if code != 0 || stderr != "" || !strings.Contains(stdout, `"auth_configured": true`) || !strings.Contains(stdout, `"auth_source": "keychain"`) {
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"auth_configured": true`) || !strings.Contains(stdout, `"auth_source": "keychain"`) ||
+		!strings.Contains(stdout, `"message_presentation": "slack-managed"`) || !strings.Contains(stdout, `"message_presentation_source": "default"`) {
 		t.Fatalf("config JSON = code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 	for _, forbidden := range []string{`"token":`, `"token_preview":`, "xoxp-secret-value", "xoxp-sec..."} {
@@ -114,6 +117,33 @@ func TestConfigMessagePrefixSetEmptyAndReset(t *testing.T) {
 	}
 	if configuration.saveCalls != 3 {
 		t.Fatalf("config save calls = %d, want 3", configuration.saveCalls)
+	}
+}
+
+func TestConfigMessagePresentationSetResetAndValidation(t *testing.T) {
+	configuration := &fakeConfigStore{}
+	deps := isolatedDependencies(&fakeCredentialStore{})
+	deps.Configuration = configuration
+
+	code, stdout, stderr := runIsolated(t, deps, context.Background(), "--json", "config", "set", "message-presentation", "always-expanded")
+	if code != 0 || stderr != "" || configuration.document.MessagePresentation == nil ||
+		*configuration.document.MessagePresentation != presentation.AlwaysExpanded ||
+		!strings.Contains(stdout, `"message_presentation": "always-expanded"`) {
+		t.Fatalf("set presentation = code %d stdout %q stderr %q document %#v", code, stdout, stderr, configuration.document)
+	}
+
+	code, stdout, stderr = runIsolated(t, deps, context.Background(), "config", "reset", "message-presentation")
+	if code != 0 || stderr != "" || configuration.document.MessagePresentation != nil ||
+		!strings.Contains(stdout, "Message presentation: slack-managed") {
+		t.Fatalf("reset presentation = code %d stdout %q stderr %q document %#v", code, stdout, stderr, configuration.document)
+	}
+	if configuration.saveCalls != 2 {
+		t.Fatalf("config save calls = %d, want 2", configuration.saveCalls)
+	}
+
+	code, stdout, stderr = runIsolated(t, forbiddenDependencies(t), context.Background(), "config", "set", "message-presentation", "forced")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "must be slack-managed or always-expanded") {
+		t.Fatalf("invalid presentation = code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 }
 
@@ -314,13 +344,16 @@ func TestConfigSetupChangesPreferencesThroughOneInputReader(t *testing.T) {
 	deps := isolatedDependencies(credentials)
 	deps.Configuration = configuration
 
-	input := "y\ny\nCustom context\nn\nn\n\n\n\nn\n"
+	input := "y\ny\nCustom context\ny\nn\nn\n\n\n\nn\n"
 	code, stdout, stderr := runIsolatedWithInput(t, deps, input, "config", "setup")
 	if code != 0 || stderr != "" {
 		t.Fatalf("setup = code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 	if configuration.document.MessagePrefix == nil || *configuration.document.MessagePrefix != "Custom context" {
 		t.Fatalf("setup prefix = %#v", configuration.document.MessagePrefix)
+	}
+	if configuration.document.MessagePresentation == nil || *configuration.document.MessagePresentation != presentation.AlwaysExpanded {
+		t.Fatalf("setup presentation = %#v", configuration.document.MessagePresentation)
 	}
 	settings := configuration.document.Effective()
 	if len(settings.Formatting) != 0 {

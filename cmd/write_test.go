@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
@@ -69,14 +70,15 @@ func TestRunWritePostsTopLevelMessageAndReturnsReceipt(t *testing.T) {
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
 
-	err := runWrite(command, &rootOptions{}, client, "general", "Deployment complete.", "prefix")
+	err := runWrite(command, &rootOptions{}, client, "general", "Deployment complete.", "prefix", presentation.AlwaysExpanded)
 	if err != nil {
 		t.Fatalf("runWrite returned error: %v", err)
 	}
 	wantRequest := api.PostMessageRequest{
-		ChannelID: "C12345678",
-		Text:      "Deployment complete.",
-		Prefix:    "prefix",
+		ChannelID:    "C12345678",
+		Text:         "Deployment complete.",
+		Prefix:       "prefix",
+		Presentation: presentation.AlwaysExpanded,
 	}
 	if client.request != wantRequest {
 		t.Fatalf("posted request = %#v, want %#v", client.request, wantRequest)
@@ -87,7 +89,7 @@ func TestRunWritePostsTopLevelMessageAndReturnsReceipt(t *testing.T) {
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	for _, want := range []string{"Message posted.", permalink, "Open: slk open '" + permalink + "'"} {
+	for _, want := range []string{"Message posted.", "Presentation requested: always-expanded", permalink, "Open: slk open '" + permalink + "'"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("receipt omitted %q: %q", want, stdout.String())
 		}
@@ -111,6 +113,7 @@ func TestRunWriteAppliesEnabledFormattingAndDisclosesIt(t *testing.T) {
 		"general",
 		"em-dashes—kinda weird",
 		"prefix",
+		presentation.SlackManaged,
 		textformat.ModuleEmDashToSpacedHyphen,
 	); err != nil {
 		t.Fatalf("runWrite returned error: %v", err)
@@ -133,7 +136,7 @@ func TestRunWriteResolvesExistingDMAndOmitsThreadFromJSON(t *testing.T) {
 	command := &cobra.Command{}
 	command.SetOut(&stdout)
 
-	if err := runWrite(command, &rootOptions{json: true}, client, "@alex", "hello", "prefix"); err != nil {
+	if err := runWrite(command, &rootOptions{json: true}, client, "@alex", "hello", "prefix", presentation.SlackManaged); err != nil {
 		t.Fatalf("runWrite returned error: %v", err)
 	}
 	if client.resolvedBy != "handle" || client.request.ChannelID != "D12345678" || client.request.ThreadTs != "" {
@@ -145,7 +148,7 @@ func TestRunWriteResolvesExistingDMAndOmitsThreadFromJSON(t *testing.T) {
 	if strings.Contains(stdout.String(), `"reply_broadcast_requested"`) {
 		t.Fatalf("top-level JSON receipt included reply broadcast state: %s", stdout.String())
 	}
-	for _, want := range []string{`"posted": true`, `"channel": "D12345678"`, `"formatting_applied": []`} {
+	for _, want := range []string{`"posted": true`, `"channel": "D12345678"`, `"formatting_applied": []`, `"message_presentation": "slack-managed"`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON receipt omitted %q: %s", want, stdout.String())
 		}

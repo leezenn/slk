@@ -6,6 +6,7 @@ import (
 
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
+	"github.com/leezenn/slk/internal/presentation"
 	"github.com/leezenn/slk/internal/textformat"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +24,8 @@ func newConfigSetupCommand(deps Dependencies, rootOptions *rootOptions) *cobra.C
 
 Existing authentication is kept by default. Use --reconnect to validate and
 replace it through the existing Slack auth flow. Setup never silently enables a
-disabled tool; use 'slk config enable' separately after explicit approval.`,
+disabled tool; use 'slk config enable' separately after explicit approval.
+Setup does not support the inherited --json flag.`,
 		Args: argumentValidator(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if rootOptions.json {
@@ -67,6 +69,7 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 		fmt.Fprintln(cmd.OutOrStdout(), "Tool: enabled")
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Message prefix (%s): %q\n", prefixSource(document), settings.MessagePrefix)
+	fmt.Fprintf(cmd.OutOrStdout(), "Message presentation (%s): %s\n", presentationSource(document), settings.MessagePresentation)
 	fmt.Fprintf(cmd.OutOrStdout(), "Enabled formatting: %s\n", textformat.List(settings.Formatting))
 	fmt.Fprintf(cmd.OutOrStdout(), "Denied mutations: %s\n", mutationList(settings.DeniedMutations))
 
@@ -90,6 +93,23 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 			return err
 		}
 		document.MessagePrefix = &prefix
+	}
+
+	alwaysExpanded, err := promptYesNo(
+		cmd,
+		reader,
+		"Use always-expanded message presentation?",
+		settings.MessagePresentation == presentation.AlwaysExpanded,
+	)
+	if err != nil {
+		return err
+	}
+	selectedPresentation := presentation.SlackManaged
+	if alwaysExpanded {
+		selectedPresentation = presentation.AlwaysExpanded
+	}
+	if document.MessagePresentation != nil || selectedPresentation != presentation.Default() {
+		document.MessagePresentation = &selectedPresentation
 	}
 
 	formatEmDashes, err := promptYesNo(
