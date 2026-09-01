@@ -314,14 +314,16 @@ func TestGetMessageRejectsDifferentTimestamp(t *testing.T) {
 	}
 }
 
-func TestGetReplyUsesExactTimestampBounds(t *testing.T) {
+func TestGetReplyFindsExactReplyAfterThreadParent(t *testing.T) {
 	const (
 		channelID = "C12345678"
 		threadTs  = "1700000000.000001"
 		replyTs   = "1700000001.000002"
 	)
 	client := NewClient("test-token")
+	requests := 0
 	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
 		if req.URL.Path != "/api/conversations.replies" {
 			t.Fatalf("method path = %q", req.URL.Path)
 		}
@@ -330,16 +332,33 @@ func TestGetReplyUsesExactTimestampBounds(t *testing.T) {
 		}
 		want := map[string]string{
 			"channel": channelID, "ts": threadTs, "oldest": replyTs,
-			"latest": replyTs, "inclusive": "true", "limit": "1",
+			"latest": replyTs, "inclusive": "true", "limit": "100",
 		}
 		for key, value := range want {
 			if got := req.Form.Get(key); got != value {
 				t.Fatalf("%s = %q, want %q", key, got, value)
 			}
 		}
+
+		var body string
+		switch requests {
+		case 1:
+			if got := req.Form.Get("cursor"); got != "" {
+				t.Fatalf("first cursor = %q, want empty", got)
+			}
+			body = `{"ok":true,"messages":[{"user":"UROOT","text":"root","ts":"` + threadTs + `"}],` +
+				`"response_metadata":{"next_cursor":"page-2"}}`
+		case 2:
+			if got := req.Form.Get("cursor"); got != "page-2" {
+				t.Fatalf("second cursor = %q, want page-2", got)
+			}
+			body = `{"ok":true,"messages":[{"user":"U12345678","text":"hello","ts":"` + replyTs + `"}]}`
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"messages":[{"user":"U12345678","text":"hello","ts":"` + replyTs + `"}]}`)),
+			Body:       io.NopCloser(strings.NewReader(body)),
 			Header:     make(http.Header),
 			Request:    req,
 		}, nil
@@ -351,6 +370,29 @@ func TestGetReplyUsesExactTimestampBounds(t *testing.T) {
 	}
 	if message.Ts != replyTs || message.User != "U12345678" {
 		t.Fatalf("GetReply() = %#v", message)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestGetReplyRejectsMissingReplyAfterCursorExhaustion(t *testing.T) {
+	const (
+		threadTs = "1700000000.000001"
+		replyTs  = "1700000001.000002"
+	)
+	client := NewClient("test-token")
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"messages":[{"user":"UROOT","ts":"` + threadTs + `"}]}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	if _, err := client.GetReply("C12345678", threadTs, replyTs); err == nil || !strings.Contains(err.Error(), "message not found") {
+		t.Fatalf("GetReply() error = %v, want exact timestamp rejection", err)
 	}
 }
 

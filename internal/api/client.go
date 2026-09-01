@@ -589,31 +589,45 @@ func (c *Client) GetMessage(channelID, ts string) (*Message, error) {
 
 // GetReply fetches one exact message from a known thread.
 func (c *Client) GetReply(channelID, threadTs, messageTs string) (*Message, error) {
-	params := url.Values{
-		"channel":   {channelID},
-		"ts":        {threadTs},
-		"oldest":    {messageTs},
-		"latest":    {messageTs},
-		"inclusive": {"true"},
-		"limit":     {"1"},
-	}
+	cursor := ""
+	for {
+		params := url.Values{
+			"channel":   {channelID},
+			"ts":        {threadTs},
+			"oldest":    {messageTs},
+			"latest":    {messageTs},
+			"inclusive": {"true"},
+			"limit":     {"100"},
+		}
+		if cursor != "" {
+			params.Set("cursor", cursor)
+		}
 
-	body, err := c.post("conversations.replies", params)
-	if err != nil {
-		return nil, err
-	}
+		body, err := c.post("conversations.replies", params)
+		if err != nil {
+			return nil, err
+		}
 
-	var resp struct {
-		SlackResponse
-		Messages []Message `json:"messages"`
+		var resp struct {
+			SlackResponse
+			Messages []Message `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, err
+		}
+		// Slack can include the thread parent before replies even with exact timestamp bounds.
+		for i := range resp.Messages {
+			if resp.Messages[i].Ts == messageTs {
+				return &resp.Messages[i], nil
+			}
+		}
+
+		cursor = resp.ResponseMetadata.NextCursor
+		if cursor == "" {
+			break
+		}
 	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
-	}
-	if len(resp.Messages) == 0 || resp.Messages[0].Ts != messageTs {
-		return nil, fmt.Errorf("message not found: ts=%s in thread %s", messageTs, threadTs)
-	}
-	return &resp.Messages[0], nil
+	return nil, fmt.Errorf("message not found: ts=%s in thread %s", messageTs, threadTs)
 }
 
 // GetContext fetches `before` messages older than the given timestamp.
