@@ -23,7 +23,7 @@ type replyTarget struct {
 	threadTs  string
 }
 
-func newReplyCommand(deps Dependencies, rootOptions *rootOptions, prefix string, configuredPresentation presentation.Mode, formatting ...textformat.Module) *cobra.Command {
+func newReplyCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
 	options := &replyOptions{}
 	command := &cobra.Command{
 		Use:   "reply <slack-permalink>",
@@ -35,7 +35,7 @@ reply text with --text. Use --also-send-to-conversation only when the reply is
 important enough to surface in the main channel or DM timeline; the message
 remains in its thread. Replies include the configured message prefix as a small
 context line unless message_prefix is explicitly empty. Slack must grant the
-current user token chat:write.` + presentationHelp(configuredPresentation) + formattingHelp(formatting, "The --text value"),
+current user token chat:write.` + presentationHelp() + formattingHelp("The --text value"),
 		Example: `  slk reply 'https://workspace.slack.com/archives/C12345/p1705312325000100' --text 'We found the issue and will ship the fix tomorrow.'
   slk reply '<slack-permalink>' --text 'Important update.' --also-send-to-conversation`,
 		Args: argumentValidator(cobra.ExactArgs(1)),
@@ -51,18 +51,22 @@ current user token chat:write.` + presentationHelp(configuredPresentation) + for
 		if err != nil {
 			return invalidArgument(cmd, err.Error())
 		}
-		mode, err := resolvePresentation(cmd, options.presentation, configuredPresentation)
-		if err != nil {
+		if _, err := resolvePresentation(cmd, options.presentation, presentation.Default()); err != nil {
 			return err
 		}
 		if err := checkContext(cmd.Context()); err != nil {
 			return err
 		}
-		client, err := getClient(cmd, deps)
+		bound, settings, err := bindCommandIdentity(cmd, deps)
 		if err != nil {
 			return err
 		}
-		return runReply(cmd, rootOptions, client, target, options.text, prefix, mode, options.alsoSendToConversation, formatting...)
+		mode, _ := resolvePresentation(cmd, options.presentation, settings.MessagePresentation)
+		client, err := getClient(cmd, bound)
+		if err != nil {
+			return err
+		}
+		return runReply(cmd, rootOptions, client, target, options.text, settings.MessagePrefix, mode, options.alsoSendToConversation, settings.Formatting...)
 	}
 	return command
 }

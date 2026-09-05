@@ -13,10 +13,12 @@ import (
 )
 
 var (
-	userMentionRe    = regexp.MustCompile(`<@(U[A-Z0-9]+)>`)
-	channelMentionRe = regexp.MustCompile(`<#(C[A-Z0-9]+)\|([^>]+)>`)
+	userMentionRe    = regexp.MustCompile(`<@([UW][A-Z0-9]+)>`)
+	channelMentionRe = regexp.MustCompile(`<#([CGD][A-Z0-9]+)(?:\|([^>]+))?>`)
 	urlLinkRe        = regexp.MustCompile(`<(https?://[^|>]+)\|([^>]+)>`)
 	bareURLRe        = regexp.MustCompile(`<(https?://[^>]+)>`)
+	mailtoLinkRe     = regexp.MustCompile(`<mailto:([^|>]+)(?:\|([^>]+))?>`)
+	specialMentionRe = regexp.MustCompile(`<!([^>|]+)(?:\|([^>]+))?>`)
 )
 
 // ResolveText replaces Slack markup with readable text.
@@ -30,11 +32,14 @@ func ResolveText(text string, resolveUser func(string) string) string {
 		return match
 	})
 
-	// Resolve channel mentions: <#C12345|channel-name> -> #channel-name
+	// Resolve channel mentions: <#C12345|channel-name> -> #channel-name.
 	text = channelMentionRe.ReplaceAllStringFunc(text, func(match string) string {
 		parts := channelMentionRe.FindStringSubmatch(match)
-		if len(parts) >= 3 {
+		if len(parts) >= 3 && parts[2] != "" {
 			return "#" + parts[2]
+		}
+		if len(parts) >= 2 {
+			return "#" + parts[1]
 		}
 		return match
 	})
@@ -47,17 +52,40 @@ func ResolveText(text string, resolveUser func(string) string) string {
 			return match
 		}
 		url, display := parts[1], parts[2]
-		// If display text looks like a (truncated) URL, use the full URL
-		if strings.HasPrefix(display, "http") || strings.HasSuffix(display, "…") || strings.HasSuffix(display, "...") {
+		// If display text looks like a (truncated) URL, use the full URL.
+		if display == url || strings.HasPrefix(display, "http") || strings.HasSuffix(display, "…") || strings.HasSuffix(display, "...") {
 			return url
 		}
-		return display
+		return display + " (" + url + ")"
 	})
 
 	// Resolve bare URLs: <http://example.com> -> http://example.com
 	text = bareURLRe.ReplaceAllString(text, "$1")
+	text = mailtoLinkRe.ReplaceAllStringFunc(text, func(match string) string {
+		parts := mailtoLinkRe.FindStringSubmatch(match)
+		if len(parts) >= 3 && parts[2] != "" && parts[2] != parts[1] {
+			return parts[2] + " (mailto:" + parts[1] + ")"
+		}
+		if len(parts) >= 2 {
+			return parts[1]
+		}
+		return match
+	})
+	text = specialMentionRe.ReplaceAllStringFunc(text, func(match string) string {
+		parts := specialMentionRe.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+		if len(parts) >= 3 && parts[2] != "" {
+			return parts[2]
+		}
+		if parts[1] == "here" || parts[1] == "channel" || parts[1] == "everyone" {
+			return "@" + parts[1]
+		}
+		return match
+	})
 
-	// Clean up other Slack formatting
+	// Clean up other Slack formatting.
 	text = strings.ReplaceAll(text, "&amp;", "&")
 	text = strings.ReplaceAll(text, "&lt;", "<")
 	text = strings.ReplaceAll(text, "&gt;", ">")
@@ -212,48 +240,61 @@ func filesToJSON(files []api.File) []FileJSON {
 	return out
 }
 
+// FormatFileLine renders one attachment consistently across message views.
+func FormatFileLine(file api.File, indent string) string {
+	return fmt.Sprintf("%s[%s] %s (%s)%s\n", indent, FileCategory(file.Mimetype), file.Name, FormatFileSize(file.Size), FileDownloadHint(file))
+}
+
 func writeFileLine(b *strings.Builder, file api.File) {
-	fmt.Fprintf(b, "    [%s] %s (%s)%s\n", FileCategory(file.Mimetype), file.Name, FormatFileSize(file.Size), FileDownloadHint(file))
+	b.WriteString(FormatFileLine(file, "    "))
 }
 
 // FormatMessages formats messages for human-readable output.
 func FormatMessages(msgs []api.Message, channelName string, resolveUser func(string) string, selfID string) string {
-	if len(msgs) == 0 {
-		return "No messages found.\n"
-	}
-
 	var b strings.Builder
+	wroteMessage := false
 
 	for _, msg := range msgs {
-		// Skip messages without text content AND without files (subtypes like join/leave)
-		if msg.Text == "" && len(msg.Files) == 0 {
+		if !messageHasVisibleContent(msg) {
 			continue
 		}
+		if !wroteMessage {
+			b.WriteString(SlackContentNotice + "\n\n")
+			wroteMessage = true
+		}
 
-		// Determine display name
 		userName := resolveUser(msg.User)
-		if msg.User == "" && msg.BotID != "" {
+		if msg.User == "" {
 			userName = msg.Username
 			if userName == "" {
-				userName = "bot"
+				userName = "unknown"
 			}
+		}
+		author := markSelf(userName, msg.User, selfID)
+		if AuthorKindForMessage(msg) == AuthorBot {
+			author += " [bot]"
+		}
+		switch ThreadRoleForMessage(msg) {
+		case ThreadParent:
+			author += " [thread parent]"
+		case ThreadReply:
+			author += " [thread reply]"
 		}
 
 		ts := FormatTimestamp(msg.Ts)
-		resolvedText := ResolveText(msg.Text, resolveUser)
-		author := markSelf(userName, msg.User, selfID)
-
+		content := ProjectMessageContent(msg, resolveUser)
 		isDM := strings.HasPrefix(channelName, "@")
 		if isDM {
-			// DM: author is the header, no redundant channel name
 			fmt.Fprintf(&b, "@%s \u2014 %s\n", author, ts)
-			fmt.Fprintf(&b, "  %s\n", resolvedText)
-		} else if channelName != "" {
-			fmt.Fprintf(&b, "#%s \u2014 %s\n", channelName, ts)
-			fmt.Fprintf(&b, "  @%s: %s\n", author, resolvedText)
+			b.WriteString(RenderSemanticContent(content, "  ", "", "  "))
 		} else {
-			fmt.Fprintf(&b, "%s\n", ts)
-			fmt.Fprintf(&b, "  @%s: %s\n", author, resolvedText)
+			if channelName != "" {
+				fmt.Fprintf(&b, "#%s \u2014 %s\n", channelName, ts)
+			} else {
+				fmt.Fprintf(&b, "%s\n", ts)
+			}
+			inlinePrefix := "  @" + author + ": "
+			b.WriteString(RenderSemanticContent(content, inlinePrefix, strings.TrimSuffix(inlinePrefix, " "), "    "))
 		}
 
 		if mode, known := presentation.DetectBlocks(msg.Blocks); known {
@@ -310,7 +351,14 @@ func FormatMessages(msgs []api.Message, channelName string, resolveUser func(str
 		b.WriteString("\n")
 	}
 
+	if !wroteMessage {
+		return "No messages found.\n"
+	}
 	return b.String()
+}
+
+func messageHasVisibleContent(message api.Message) bool {
+	return message.Text != "" || len(message.Files) > 0 || len(message.Blocks) > 0
 }
 
 // FormatChannels formats channel list for human-readable output.
@@ -433,15 +481,15 @@ func FormatSearchResults(result *api.SearchResult, resolveUser func(string) stri
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d results:\n\n", result.Messages.Total)
+	fmt.Fprintf(&b, "%d results:\n%s\n%s\n\n", result.Messages.Total, SlackContentNotice, SearchContentNotice)
 
 	for _, m := range result.Messages.Matches {
 		ts := FormatTimestamp(m.Ts)
-		text := ResolveText(m.Text, resolveUser)
 		chName := SearchChannelLabel(m.Channel, resolveUser)
 		fmt.Fprintf(&b, "%s \u2014 %s\n", chName, ts)
 		author := SearchAuthorLabel(m, resolveUser, selfID)
-		fmt.Fprintf(&b, "  @%s: %s\n", author, text)
+		inlinePrefix := "  @" + author + ": "
+		b.WriteString(RenderSemanticContent(ProjectSearchContent(m, resolveUser), inlinePrefix, strings.TrimSuffix(inlinePrefix, " "), "    "))
 
 		// Files
 		for _, file := range m.Files {
@@ -474,25 +522,27 @@ func FormatJSON(data interface{}) (string, error) {
 
 // MessageJSON is the JSON representation of a message.
 type MessageJSON struct {
-	User                string            `json:"user"`
-	UserID              string            `json:"user_id"`
-	IsSelf              bool              `json:"is_self"`
-	Text                string            `json:"text"`
-	Ts                  string            `json:"ts"`
-	Timestamp           string            `json:"timestamp"`
-	ThreadTs            string            `json:"thread_ts,omitempty"`
-	ReplyCount          int               `json:"reply_count,omitempty"`
-	Reactions           []api.Reaction    `json:"reactions,omitempty"`
-	Files               []FileJSON        `json:"files,omitempty"`
-	MessagePresentation presentation.Mode `json:"message_presentation,omitempty"`
+	User                string             `json:"user"`
+	UserID              string             `json:"user_id"`
+	IsSelf              bool               `json:"is_self"`
+	Text                string             `json:"text"`
+	Ts                  string             `json:"ts"`
+	Timestamp           string             `json:"timestamp"`
+	ThreadTs            string             `json:"thread_ts,omitempty"`
+	ReplyCount          int                `json:"reply_count,omitempty"`
+	Reactions           []api.Reaction     `json:"reactions,omitempty"`
+	Files               []FileJSON         `json:"files,omitempty"`
+	MessagePresentation presentation.Mode  `json:"message_presentation,omitempty"`
+	AuthorKind          AuthorKind         `json:"author_kind"`
+	ThreadRole          ThreadRole         `json:"thread_role"`
+	SemanticContent     MessageContentJSON `json:"semantic_content"`
 }
 
 // MessagesToJSON converts messages to JSON-friendly structs.
 func MessagesToJSON(msgs []api.Message, resolveUser func(string) string, selfID string) []MessageJSON {
 	var out []MessageJSON
 	for _, msg := range msgs {
-		// Skip messages without text content AND without files
-		if msg.Text == "" && len(msg.Files) == 0 {
+		if !messageHasVisibleContent(msg) {
 			continue
 		}
 		userName := resolveUser(msg.User)
@@ -516,6 +566,9 @@ func MessagesToJSON(msgs []api.Message, resolveUser func(string) string, selfID 
 			Reactions:           msg.Reactions,
 			Files:               filesToJSON(msg.Files),
 			MessagePresentation: messagePresentation,
+			AuthorKind:          AuthorKindForMessage(msg),
+			ThreadRole:          ThreadRoleForMessage(msg),
+			SemanticContent:     ProjectMessageContent(msg, resolveUser),
 		})
 	}
 	return out
@@ -523,17 +576,20 @@ func MessagesToJSON(msgs []api.Message, resolveUser func(string) string, selfID 
 
 // SearchMatchJSON is the JSON representation of a search result with identity metadata.
 type SearchMatchJSON struct {
-	Type        string            `json:"type"`
-	User        string            `json:"user"`
-	Username    string            `json:"username"`
-	IsSelf      bool              `json:"is_self"`
-	Text        string            `json:"text"`
-	Ts          string            `json:"ts"`
-	Timestamp   string            `json:"timestamp,omitempty"`
-	Channel     api.SearchChannel `json:"channel"`
-	Permalink   string            `json:"permalink"`
-	OpenCommand string            `json:"open_command,omitempty"`
-	Files       []FileJSON        `json:"files,omitempty"`
+	Type            string             `json:"type"`
+	User            string             `json:"user"`
+	Username        string             `json:"username"`
+	IsSelf          bool               `json:"is_self"`
+	Text            string             `json:"text"`
+	Ts              string             `json:"ts"`
+	Timestamp       string             `json:"timestamp,omitempty"`
+	Channel         api.SearchChannel  `json:"channel"`
+	Permalink       string             `json:"permalink"`
+	OpenCommand     string             `json:"open_command,omitempty"`
+	Files           []FileJSON         `json:"files,omitempty"`
+	AuthorKind      AuthorKind         `json:"author_kind"`
+	ThreadRole      ThreadRole         `json:"thread_role"`
+	SemanticContent MessageContentJSON `json:"semantic_content"`
 }
 
 // OpenCommand returns a safely quoted command for inspecting a Slack permalink.
@@ -544,32 +600,45 @@ func OpenCommand(permalink string) string {
 	return "slk open '" + strings.ReplaceAll(permalink, "'", "'\\''") + "'"
 }
 
-// SearchMatchToJSON adds timestamp and authenticated-user identity metadata.
+// SearchMatchToJSON preserves the compatibility entrypoint without display-name resolution.
 func SearchMatchToJSON(match api.SearchMatch, selfID string) SearchMatchJSON {
+	return SearchMatchToJSONResolved(match, nil, selfID)
+}
+
+// SearchMatchToJSONResolved adds readable semantic content to one search match.
+func SearchMatchToJSONResolved(match api.SearchMatch, resolveUser func(string) string, selfID string) SearchMatchJSON {
 	timestamp := ""
 	if occurred := TsToTime(match.Ts); !occurred.IsZero() {
 		timestamp = occurred.UTC().Format(time.RFC3339)
 	}
 	return SearchMatchJSON{
-		Type:        match.Type,
-		User:        match.User,
-		Username:    match.Username,
-		IsSelf:      selfID != "" && match.User == selfID,
-		Text:        match.Text,
-		Ts:          match.Ts,
-		Timestamp:   timestamp,
-		Channel:     match.Channel,
-		Permalink:   match.Permalink,
-		OpenCommand: OpenCommand(match.Permalink),
-		Files:       filesToJSON(match.Files),
+		Type:            match.Type,
+		User:            match.User,
+		Username:        match.Username,
+		IsSelf:          selfID != "" && match.User == selfID,
+		Text:            match.Text,
+		Ts:              match.Ts,
+		Timestamp:       timestamp,
+		Channel:         match.Channel,
+		Permalink:       match.Permalink,
+		OpenCommand:     OpenCommand(match.Permalink),
+		Files:           filesToJSON(match.Files),
+		AuthorKind:      AuthorKindForSearch(match),
+		ThreadRole:      ThreadUnknown,
+		SemanticContent: ProjectSearchContent(match, resolveUser),
 	}
 }
 
 // SearchMatchesToJSON converts search matches to their public representation.
 func SearchMatchesToJSON(matches []api.SearchMatch, selfID string) []SearchMatchJSON {
+	return SearchMatchesToJSONResolved(matches, nil, selfID)
+}
+
+// SearchMatchesToJSONResolved converts search matches with readable semantic references.
+func SearchMatchesToJSONResolved(matches []api.SearchMatch, resolveUser func(string) string, selfID string) []SearchMatchJSON {
 	out := make([]SearchMatchJSON, 0, len(matches))
 	for _, match := range matches {
-		out = append(out, SearchMatchToJSON(match, selfID))
+		out = append(out, SearchMatchToJSONResolved(match, resolveUser, selfID))
 	}
 	return out
 }

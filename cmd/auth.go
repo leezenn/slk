@@ -78,15 +78,12 @@ func storeToken(cmd *cobra.Command, deps Dependencies, store auth.Store, raw str
 	if !strings.HasPrefix(token, "xoxp-") {
 		return invalidArgument(cmd, "expected a User OAuth Token (starts with xoxp-); bot tokens are not supported")
 	}
-	client, err := deps.client(token)
-	if err != nil {
-		return err
-	}
-	client.SetContext(cmd.Context())
-	client.SetErrorWriter(cmd.ErrOrStderr())
-	result, err := client.AuthTest()
+	result, err := deps.validateToken(cmd.Context(), token, cmd.ErrOrStderr())
 	if err != nil {
 		return newCommandError(ErrorAuthFailed, "Slack rejected the credential.", "Run 'slk auth --interactive' to reconnect, then retry.")
+	}
+	if _, _, _, err := deps.bindIdentity(token, result); err != nil {
+		return err
 	}
 	if err := store.Set(token); err != nil {
 		return credentialBackendError(err)

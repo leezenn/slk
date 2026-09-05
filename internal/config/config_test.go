@@ -11,244 +11,162 @@ import (
 	"github.com/leezenn/slk/internal/textformat"
 )
 
-func TestLoadFileAppliesSettingsSemantics(t *testing.T) {
-	tests := []struct {
-		name             string
-		content          *string
-		wantPrefix       string
-		wantPresentation presentation.Mode
-		wantOff          bool
-		wantDenied       []Mutation
-		wantFormatting   []textformat.Module
-		wantErr          string
-	}{
-		{name: "missing file", wantPrefix: DefaultMessagePrefix},
-		{name: "missing keys", content: stringPointer(`{}`), wantPrefix: DefaultMessagePrefix},
-		{name: "prefix override", content: stringPointer(`{"message_prefix":"Reviewed by the operator."}`), wantPrefix: "Reviewed by the operator."},
-		{name: "explicit empty prefix disables", content: stringPointer(`{"message_prefix":""}`), wantPrefix: ""},
-		{name: "always expanded presentation", content: stringPointer(`{"message_presentation":"always-expanded"}`), wantPrefix: DefaultMessagePrefix, wantPresentation: presentation.AlwaysExpanded},
-		{name: "explicit slack managed presentation", content: stringPointer(`{"message_presentation":"slack-managed"}`), wantPrefix: DefaultMessagePrefix, wantPresentation: presentation.SlackManaged},
-		{name: "tool disabled", content: stringPointer(`{"disabled":true}`), wantPrefix: DefaultMessagePrefix, wantOff: true},
-		{name: "omitted deny list allows all", content: stringPointer(`{}`), wantPrefix: DefaultMessagePrefix},
-		{name: "empty deny list allows all", content: stringPointer(`{"deny_mutations":[]}`), wantPrefix: DefaultMessagePrefix},
-		{name: "explicit mutations denied", content: stringPointer(`{"deny_mutations":["delete","edit","replace","reply","write"]}`), wantPrefix: DefaultMessagePrefix, wantDenied: []Mutation{MutationDelete, MutationEdit, MutationReplace, MutationReply, MutationWrite}},
-		{name: "duplicate mutation deduplicated", content: stringPointer(`{"deny_mutations":["write","write"]}`), wantPrefix: DefaultMessagePrefix, wantDenied: []Mutation{MutationWrite}},
-		{name: "formatting explicitly enabled", content: stringPointer(`{"formatting":["em-dash-to-spaced-hyphen"]}`), wantPrefix: DefaultMessagePrefix, wantFormatting: []textformat.Module{textformat.ModuleEmDashToSpacedHyphen}},
-		{name: "duplicate formatting deduplicated", content: stringPointer(`{"formatting":["em-dash-to-spaced-hyphen","em-dash-to-spaced-hyphen"]}`), wantPrefix: DefaultMessagePrefix, wantFormatting: []textformat.Module{textformat.ModuleEmDashToSpacedHyphen}},
-		{name: "unknown formatting rejected", content: stringPointer(`{"formatting":["unknown"]}`), wantErr: "unknown module"},
-		{name: "wrong formatting type rejected", content: stringPointer(`{"formatting":"em-dash-to-spaced-hyphen"}`), wantErr: "cannot unmarshal"},
-		{name: "unknown mutation rejected", content: stringPointer(`{"deny_mutations":["unknown"]}`), wantErr: "unknown command"},
-		{name: "wrong deny list type rejected", content: stringPointer(`{"deny_mutations":"write"}`), wantErr: "cannot unmarshal"},
-		{name: "whitespace only prefix rejected", content: stringPointer(`{"message_prefix":"   "}`), wantErr: "must be empty or contain visible text"},
-		{name: "wrong prefix type rejected", content: stringPointer(`{"message_prefix":false}`), wantErr: "cannot unmarshal"},
-		{name: "unknown presentation rejected", content: stringPointer(`{"message_presentation":"forced"}`), wantErr: "message_presentation must be"},
-		{name: "wrong presentation type rejected", content: stringPointer(`{"message_presentation":false}`), wantErr: "cannot unmarshal"},
-		{name: "removed reply key rejected", content: stringPointer(`{"reply_prefix":"hello"}`), wantErr: "unknown field"},
-		{name: "multiple values rejected", content: stringPointer(`{} {}`), wantErr: "multiple JSON values"},
+func TestLoadFileReadsMachinePolicyAndReleasedFlatPreferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	contents := `{
+		"disabled": true,
+		"deny_mutations": ["write", "write", "delete"],
+		"message_prefix": "Reviewed locally.",
+		"message_presentation": "always-expanded",
+		"formatting": ["em-dash-to-spaced-hyphen"]
+	}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	for _, test := range tests {
+	document, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := document.Effective()
+	if !machine.Disabled || !machine.MutationDenied(MutationWrite) || !machine.MutationDenied(MutationDelete) {
+		t.Fatalf("machine settings = %#v", machine)
+	}
+	legacy := document.legacyPreferences()
+	if !hasPreferences(legacy) {
+		t.Fatal("released flat preferences were not retained for identity binding")
+	}
+	preferences := legacy.Effective()
+	if preferences.MessagePrefix != "Reviewed locally." || preferences.MessagePresentation != presentation.AlwaysExpanded ||
+		!preferences.FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen) {
+		t.Fatalf("legacy preferences = %#v", preferences)
+	}
+}
+
+func TestLoadFileDefaultsAndValidation(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "empty", content: `{}`},
+		{name: "explicit empty prefix", content: `{"message_prefix":""}`},
+		{name: "unknown field", content: `{"reply_prefix":"x"}`, wantErr: "unknown field"},
+		{name: "retired style gate", content: `{"style_enabled":true}`, wantErr: "unknown field"},
+		{name: "unknown mutation", content: `{"deny_mutations":["launch"]}`, wantErr: "unknown command"},
+		{name: "unknown formatting", content: `{"formatting":["sparkles"]}`, wantErr: "unknown module"},
+		{name: "invalid presentation", content: `{"message_presentation":"forced"}`, wantErr: "message_presentation"},
+		{name: "blank prefix", content: `{"message_prefix":"   "}`, wantErr: "visible text"},
+		{name: "multiple values", content: `{} {}`, wantErr: "multiple JSON values"},
+		{name: "invalid identity key", content: `{"identities":{"T1-U1":{}}}`, wantErr: "opaque identity key"},
+		{name: "unknown identity field", content: `{"identities":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":{"prompt":"x"}}}`, wantErr: "unknown field"},
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
-			if test.content != nil {
-				if err := os.WriteFile(path, []byte(*test.content), 0o600); err != nil {
-					t.Fatal(err)
-				}
+			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
+				t.Fatal(err)
 			}
-
-			settings, err := LoadFile(path)
+			document, err := LoadFile(path)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
-					t.Fatalf("LoadFile() error = %v, want phrase %q", err, test.wantErr)
+					t.Fatalf("LoadFile() error = %v, want %q", err, test.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("LoadFile() error = %v", err)
+				t.Fatal(err)
 			}
-			wantPresentation := test.wantPresentation
-			if wantPresentation == "" {
-				wantPresentation = presentation.Default()
-			}
-			if settings.MessagePrefix != test.wantPrefix || settings.MessagePresentation != wantPresentation || settings.Disabled != test.wantOff {
-				t.Fatalf("settings = %#v, want prefix %q presentation %q disabled %v", settings, test.wantPrefix, wantPresentation, test.wantOff)
-			}
-			if len(settings.DeniedMutations) != len(test.wantDenied) {
-				t.Fatalf("denied mutations = %v, want %v", settings.DeniedMutations, test.wantDenied)
-			}
-			for _, mutation := range []Mutation{MutationDelete, MutationEdit, MutationReplace, MutationReply, MutationWrite} {
-				wantDenied := containsMutation(test.wantDenied, mutation)
-				if got := settings.MutationDenied(mutation); got != wantDenied {
-					t.Fatalf("MutationDenied(%q) = %v, want %v", mutation, got, wantDenied)
-				}
-			}
-			wantFormatting := containsFormatting(test.wantFormatting, textformat.ModuleEmDashToSpacedHyphen)
-			if got := settings.FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen); got != wantFormatting {
-				t.Fatalf("FormattingEnabled() = %v, want %v", got, wantFormatting)
+			if document.Effective().MessagePrefix != DefaultMessagePrefix || document.Effective().MessagePresentation != presentation.Default() {
+				t.Fatalf("defaults = %#v", document.Effective())
 			}
 		})
 	}
-}
 
-func TestLoadDocumentPreservesDefaultAndExplicitExpressionValues(t *testing.T) {
-	directory := t.TempDir()
-	missing, err := LoadDocumentFile(filepath.Join(directory, "missing.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if missing.MessagePrefix != nil || missing.MessagePresentation != nil {
-		t.Fatalf("missing document expression values = %#v", missing)
-	}
-
-	path := filepath.Join(directory, "explicit.json")
-	if err := os.WriteFile(path, []byte(`{"message_prefix":"","message_presentation":"always-expanded"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	explicit, err := LoadDocumentFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if explicit.MessagePrefix == nil || *explicit.MessagePrefix != "" || explicit.MessagePresentation == nil || *explicit.MessagePresentation != presentation.AlwaysExpanded {
-		t.Fatalf("explicit document expression values = %#v", explicit)
+	missing, err := LoadFile(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil || missing.Effective().MessagePrefix != DefaultMessagePrefix {
+		t.Fatalf("missing config = %#v, %v", missing, err)
 	}
 }
 
-func TestSaveFileWritesProtectedDeterministicConfig(t *testing.T) {
+func TestSaveFileWritesOneProtectedDeterministicAggregate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
+	identity, _ := NewIdentity("T111", "U111")
+	namespace, _ := identity.Namespace()
 	prefix := "Operator reviewed."
 	mode := presentation.AlwaysExpanded
 	document := Document{
-		Disabled:            true,
+		Disabled:        true,
+		DeniedMutations: []Mutation{MutationWrite, MutationDelete, MutationWrite},
+	}
+	if err := document.SetPreferences(identity, Preferences{
 		MessagePrefix:       &prefix,
 		MessagePresentation: &mode,
-		DeniedMutations:     []Mutation{MutationWrite, MutationDelete, MutationReply, MutationEdit, MutationReplace, MutationWrite},
 		Formatting:          []textformat.Module{textformat.ModuleEmDashToSpacedHyphen, textformat.ModuleEmDashToSpacedHyphen},
-	}
-	if err := SaveFile(path, document); err != nil {
-		t.Fatalf("SaveFile() error = %v", err)
-	}
-
-	info, err := os.Stat(path)
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("config permissions = %o, want 600", got)
+	if err := SaveFile(path, document); err != nil {
+		t.Fatal(err)
 	}
+
+	for _, target := range []struct {
+		path string
+		mode os.FileMode
+	}{{filepath.Dir(path), 0o700}, {path, 0o600}} {
+		info, err := os.Stat(target.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != target.mode {
+			t.Fatalf("%s mode = %o, want %o", target.path, info.Mode().Perm(), target.mode)
+		}
+	}
+
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stored struct {
-		Disabled            bool                `json:"disabled"`
-		MessagePrefix       string              `json:"message_prefix"`
-		MessagePresentation presentation.Mode   `json:"message_presentation"`
-		DeniedMutations     []Mutation          `json:"deny_mutations"`
-		Formatting          []textformat.Module `json:"formatting"`
-	}
+	var stored map[string]any
 	if err := json.Unmarshal(contents, &stored); err != nil {
 		t.Fatal(err)
 	}
-	if !stored.Disabled || stored.MessagePrefix != prefix || stored.MessagePresentation != mode {
-		t.Fatalf("stored config = %#v", stored)
+	if _, present := stored["message_prefix"]; present {
+		t.Fatalf("identity preference remained at top level: %s", contents)
 	}
-	wantDenied := []Mutation{MutationDelete, MutationEdit, MutationReplace, MutationReply, MutationWrite}
-	if len(stored.DeniedMutations) != len(wantDenied) {
-		t.Fatalf("stored denied mutations = %v, want %v", stored.DeniedMutations, wantDenied)
+	identities, ok := stored["identities"].(map[string]any)
+	if !ok || len(identities) != 1 || identities[namespace] == nil {
+		t.Fatalf("stored identities = %#v", stored["identities"])
 	}
-	for index, mutation := range wantDenied {
-		if stored.DeniedMutations[index] != mutation {
-			t.Fatalf("stored denied mutations = %v, want %v", stored.DeniedMutations, wantDenied)
-		}
-	}
-	wantFormatting := []textformat.Module{textformat.ModuleEmDashToSpacedHyphen}
-	if !equalFormatting(stored.Formatting, wantFormatting) {
-		t.Fatalf("stored formatting = %v, want %v", stored.Formatting, wantFormatting)
+	if strings.Contains(string(contents), identity.TeamID) || strings.Contains(string(contents), identity.UserID) {
+		t.Fatalf("stored config exposed canonical identity: %s", contents)
 	}
 
 	loaded, err := LoadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.Disabled || loaded.MessagePrefix != prefix || loaded.MessagePresentation != mode {
-		t.Fatalf("loaded settings = %#v", loaded)
-	}
-	for _, mutation := range wantDenied {
-		if !loaded.MutationDenied(mutation) {
-			t.Fatalf("loaded settings allow %q: %#v", mutation, loaded)
-		}
-	}
-	if !loaded.FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen) {
-		t.Fatalf("loaded settings omitted formatting: %#v", loaded)
-	}
-}
-
-func TestSaveFileOmitsResetPrefix(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := SaveFile(path, Document{}); err != nil {
-		t.Fatal(err)
-	}
-	contents, err := os.ReadFile(path)
+	preferences, err := loaded.Preferences(identity)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(contents), "message_prefix") || strings.Contains(string(contents), "message_presentation") {
-		t.Fatalf("reset config persisted expression preferences: %s", contents)
-	}
-	if strings.Contains(string(contents), "formatting") {
-		t.Fatalf("default config persisted formatting: %s", contents)
+	settings := Merge(loaded, preferences)
+	if !settings.Disabled || settings.MessagePrefix != prefix ||
+		settings.MessagePresentation != mode || !settings.MutationDenied(MutationDelete) ||
+		!settings.FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen) {
+		t.Fatalf("loaded aggregate = %#v", settings)
 	}
 }
 
-func TestPathUsesXDGConfigHome(t *testing.T) {
+func TestPathUsesAbsoluteXDGConfigHome(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", base)
-
 	path, err := Path()
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || path != filepath.Join(base, "slk", "config.json") {
+		t.Fatalf("Path() = %q, %v", path, err)
 	}
-	want := filepath.Join(base, "slk", "config.json")
-	if path != want {
-		t.Fatalf("Path() = %q, want %q", path, want)
-	}
-}
 
-func TestPathRejectsRelativeXDGConfigHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "relative")
 	if _, err := Path(); err == nil || !strings.Contains(err.Error(), "absolute path") {
-		t.Fatalf("Path() error = %v, want absolute-path error", err)
+		t.Fatalf("relative XDG_CONFIG_HOME error = %v", err)
 	}
-}
-
-func stringPointer(value string) *string { return &value }
-
-func containsMutation(mutations []Mutation, target Mutation) bool {
-	for _, mutation := range mutations {
-		if mutation == target {
-			return true
-		}
-	}
-	return false
-}
-
-func containsFormatting(modules []textformat.Module, target textformat.Module) bool {
-	for _, module := range modules {
-		if module == target {
-			return true
-		}
-	}
-	return false
-}
-
-func equalFormatting(left, right []textformat.Module) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
 }

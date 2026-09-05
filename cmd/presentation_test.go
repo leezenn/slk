@@ -49,9 +49,9 @@ func TestResolvePresentationUsesFlagOverConfig(t *testing.T) {
 	}
 }
 
-func TestPresentationHelpUsesConfiguredMode(t *testing.T) {
-	help := presentationHelp(presentation.AlwaysExpanded)
-	for _, want := range []string{"Effective default: always-expanded", "--presentation overrides this command only", "slack-managed", "always-expanded"} {
+func TestPresentationHelpDescribesOfflineDefaults(t *testing.T) {
+	help := presentationHelp()
+	for _, want := range []string{"Built-in default: slack-managed", "Authenticated identity preferences are applied at execution", "--presentation overrides this command only", "always-expanded"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("presentation help omitted %q: %q", want, help)
 		}

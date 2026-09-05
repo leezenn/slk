@@ -55,21 +55,22 @@ func newRootCommand(deps Dependencies, settings config.Settings) *cobra.Command 
 		newThreadCommand(deps, options),
 		newUsersCommand(deps, options),
 		newWhoamiCommand(deps, options),
+		newStyleCommand(deps, options),
 	)
 	if !settings.MutationDenied(config.MutationDelete) {
 		root.AddCommand(newDeleteCommand(deps, options))
 	}
 	if !settings.MutationDenied(config.MutationEdit) {
-		root.AddCommand(newEditCommand(deps, options, settings.Formatting...))
+		root.AddCommand(newEditCommand(deps, options))
 	}
 	if !settings.MutationDenied(config.MutationReplace) {
-		root.AddCommand(newReplaceCommand(deps, options, settings.MessagePrefix, settings.MessagePresentation, settings.Formatting...))
+		root.AddCommand(newReplaceCommand(deps, options))
 	}
 	if !settings.MutationDenied(config.MutationReply) {
-		root.AddCommand(newReplyCommand(deps, options, settings.MessagePrefix, settings.MessagePresentation, settings.Formatting...))
+		root.AddCommand(newReplyCommand(deps, options))
 	}
 	if !settings.MutationDenied(config.MutationWrite) {
-		root.AddCommand(newWriteCommand(deps, options, settings.MessagePrefix, settings.MessagePresentation, settings.Formatting...))
+		root.AddCommand(newWriteCommand(deps, options))
 	}
 	return root
 }
@@ -127,26 +128,24 @@ Configuration:
 	if len(capabilities) > 0 {
 		description += "; " + strings.Join(capabilities, ", ")
 	}
-	return description + `.` + rootPresentationHelp(settings) + rootFormattingHelp(settings.Formatting) + `
+	return description + `.` + rootPresentationHelp(settings) + rootFormattingHelp() + rootStyleHelp() + `
 
 Environment:
   SLACK_TOKEN       Fallback token if keychain is not configured
   XDG_CONFIG_HOME   Config root; defaults to ~/.config
 
 Configuration:
-  $XDG_CONFIG_HOME/slk/config.json`
+  $XDG_CONFIG_HOME/slk/config.json
+  Run 'slk config path' to print the resolved path.`
 }
 
 func rootPresentationHelp(settings config.Settings) string {
-	mode, err := presentation.Effective(settings.MessagePresentation)
-	if err != nil {
-		mode = presentation.Default()
-	}
 	help := fmt.Sprintf(`
 
 Message presentation:
-  Effective default: %s
-  Accepted values: slack-managed, always-expanded.`, mode)
+  Built-in default: %s
+  Authenticated identity preferences are applied at execution.
+  Accepted values: slack-managed, always-expanded.`, presentation.Default())
 	overrideOwners := make([]string, 0, 3)
 	for _, mutation := range []config.Mutation{config.MutationWrite, config.MutationReply, config.MutationReplace} {
 		if !settings.MutationDenied(mutation) {
@@ -160,6 +159,24 @@ Message presentation:
 		help += "\n  Edit preservation: edit has no override and preserves target presentation."
 	}
 	return help
+}
+
+func rootStyleHelp() string {
+	return `
+
+Style profiles (general scope; no Slack or identity state is read for help):
+  slk style                         Show the authenticated profile state
+  slk style prepare [--limit N]     Collect 6-200 normalized messages for linguistic analysis
+  slk style create                  Create a draft from strict JSON on stdin
+  slk style use                     Use only the approved profile
+  slk style review                  Review the exact current draft
+  slk style adjust                  Replace a draft with strict JSON on stdin
+  slk style approve --digest ...    Approve the exact reviewed digest
+
+  If no profile exists, ask the human whether they want one created. Creation
+  stops at a draft requiring review. Apply relevant linguistic patterns to the
+  current message intent and context; do not mechanically reproduce every feature.
+  Inspect the relevant message or thread separately before drafting.`
 }
 
 func rootExamples(settings config.Settings) string {
@@ -180,6 +197,7 @@ func rootExamples(settings config.Settings) string {
 		`  slk search "deploy failed"`,
 		"  slk download F0123456789",
 	}
+	examples = append(examples, "  slk style", "  slk --json style prepare", "  slk style use")
 	if !settings.MutationDenied(config.MutationWrite) {
 		examples = append(examples, "  slk write general --text 'The deployment is complete.'")
 	}
@@ -303,19 +321,40 @@ func identifySelf(client selfIdentifier) (string, error) {
 	return client.SelfID(), nil
 }
 
+func bindCommandIdentity(cmd *cobra.Command, deps Dependencies) (Dependencies, config.Settings, error) {
+	credentials, err := deps.credentialStore()
+	if err != nil {
+		return deps, config.Settings{}, err
+	}
+	authResult, err := credentials.Get()
+	if err != nil {
+		return deps, config.Settings{}, authRequiredError()
+	}
+	identityResult, err := deps.validateToken(cmd.Context(), authResult.Token, cmd.ErrOrStderr())
+	if err != nil {
+		return deps, config.Settings{}, identityUnavailableError(err)
+	}
+	bound, document, preferences, err := deps.bindIdentity(authResult.Token, identityResult)
+	return bound, config.Merge(document, preferences), err
+}
+
 func getClient(cmd *cobra.Command, deps Dependencies) (*api.Client, error) {
 	if err := checkContext(cmd.Context()); err != nil {
 		return nil, err
 	}
-	store, err := deps.credentialStore()
-	if err != nil {
-		return nil, err
+	token := deps.ActiveToken
+	if token == "" {
+		store, err := deps.credentialStore()
+		if err != nil {
+			return nil, err
+		}
+		result, err := store.Get()
+		if err != nil {
+			return nil, authRequiredError()
+		}
+		token = result.Token
 	}
-	result, err := store.Get()
-	if err != nil {
-		return nil, authRequiredError()
-	}
-	client, err := deps.client(result.Token)
+	client, err := deps.client(token)
 	if err != nil {
 		return nil, err
 	}

@@ -23,9 +23,10 @@ func newConfigCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Comman
 		Short: "Inspect or change local slk configuration",
 		Long: `Inspect effective slk preferences, manage command policy, or run guided setup.
 
-Bare 'slk config' is read-only. Preference mutations are explicit subcommands.
-The interactive setup journey reuses the existing verified Slack auth flow and
-keeps existing credentials unless --reconnect is supplied.`,
+Bare 'slk config' is read-only except for the one-time upgrade of released
+flat preferences into the validated identity entry. Preference mutations are
+explicit subcommands. Guided setup keeps existing credentials unless
+--reconnect is supplied.`,
 		Args: argumentValidator(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runConfigSummary(cmd, deps, rootOptions)
@@ -63,7 +64,7 @@ func newConfigPathCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Co
 			if rootOptions.json {
 				return writeJSON(cmd, map[string]interface{}{"ok": true, "path": path})
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), path)
+			writeConfigLocation(cmd, path)
 			return nil
 		},
 	}
@@ -93,23 +94,26 @@ message-presentation value must be slack-managed or always-expanded. Use
 			default:
 				return invalidArgument(cmd, "unknown preference "+preference)
 			}
+			if err := requireIdentityPreferencesEnabled(deps); err != nil {
+				return err
+			}
 
-			document, store, path, err := loadConfigDocument(deps)
+			bound, document, preferences, store, path, err := loadRequiredIdentityConfig(cmd, deps)
 			if err != nil {
 				return err
 			}
 			action := "message prefix updated"
 			if preference == messagePrefixPreference {
 				prefix := args[1]
-				document.MessagePrefix = &prefix
+				preferences.MessagePrefix = &prefix
 			} else {
-				document.MessagePresentation = &mode
+				preferences.MessagePresentation = &mode
 				action = "message presentation updated"
 			}
-			if err := saveConfigDocument(store, document); err != nil {
+			if err := saveIdentityConfigDocument(bound, store, document, preferences); err != nil {
 				return err
 			}
-			return writeConfigReceipt(cmd, rootOptions, action, path, document.Effective())
+			return writeIdentityConfigReceipt(cmd, rootOptions, action, path, config.Merge(document, preferences))
 		},
 	}
 }
@@ -124,21 +128,24 @@ func newConfigResetCommand(deps Dependencies, rootOptions *rootOptions) *cobra.C
 			if preference != messagePrefixPreference && preference != messagePresentationPreference {
 				return invalidArgument(cmd, "unknown preference "+preference)
 			}
-			document, store, path, err := loadConfigDocument(deps)
+			if err := requireIdentityPreferencesEnabled(deps); err != nil {
+				return err
+			}
+			bound, document, preferences, store, path, err := loadRequiredIdentityConfig(cmd, deps)
 			if err != nil {
 				return err
 			}
 			action := "message prefix reset"
 			if preference == messagePrefixPreference {
-				document.MessagePrefix = nil
+				preferences.MessagePrefix = nil
 			} else {
-				document.MessagePresentation = nil
+				preferences.MessagePresentation = nil
 				action = "message presentation reset"
 			}
-			if err := saveConfigDocument(store, document); err != nil {
+			if err := saveIdentityConfigDocument(bound, store, document, preferences); err != nil {
 				return err
 			}
-			return writeConfigReceipt(cmd, rootOptions, action, path, document.Effective())
+			return writeIdentityConfigReceipt(cmd, rootOptions, action, path, config.Merge(document, preferences))
 		},
 	}
 }
@@ -196,11 +203,14 @@ an em dash into one spaced ASCII hyphen. It applies only to submitted write,
 reply, and replacement text and to the --with fragment of edit.`,
 		Args: argumentValidator(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			document, _, _, err := loadConfigDocument(deps)
+			if err := requireIdentityPreferencesEnabled(deps); err != nil {
+				return err
+			}
+			_, _, preferences, _, _, err := loadRequiredIdentityConfig(cmd, deps)
 			if err != nil {
 				return err
 			}
-			return writeFormattingStatus(cmd, rootOptions, document.Effective())
+			return writeFormattingStatus(cmd, rootOptions, preferences.Effective())
 		},
 	}
 	command.AddCommand(
@@ -226,19 +236,22 @@ func newFormattingPolicyCommand(deps Dependencies, rootOptions *rootOptions, ena
 			if !known {
 				return invalidArgument(cmd, "unknown formatting module "+args[0])
 			}
-			document, store, path, err := loadConfigDocument(deps)
+			if err := requireIdentityPreferencesEnabled(deps); err != nil {
+				return err
+			}
+			bound, document, preferences, store, path, err := loadRequiredIdentityConfig(cmd, deps)
 			if err != nil {
 				return err
 			}
-			setFormattingEnabled(&document, module, enable)
-			if err := saveConfigDocument(store, document); err != nil {
+			setFormattingEnabled(&preferences, module, enable)
+			if err := saveIdentityConfigDocument(bound, store, document, preferences); err != nil {
 				return err
 			}
 			action := fmt.Sprintf("formatting module %s disabled", module)
 			if enable {
 				action = fmt.Sprintf("formatting module %s enabled", module)
 			}
-			return writeConfigReceipt(cmd, rootOptions, action, path, document.Effective())
+			return writeIdentityConfigReceipt(cmd, rootOptions, action, path, config.Merge(document, preferences))
 		},
 	}
 }
@@ -340,41 +353,61 @@ func runConfigSummary(cmd *cobra.Command, deps Dependencies, rootOptions *rootOp
 	if err != nil {
 		return err
 	}
-	settings := document.Effective()
-	credentials, err := deps.credentialStore()
-	if err != nil {
-		return err
+	bound := deps
+	preferences := config.Preferences{}
+	authResult := auth.Result{}
+	authConfigured := false
+	identityAvailable := false
+	if document.Disabled {
+		credentials, credentialErr := deps.credentialStore()
+		if credentialErr != nil {
+			return credentialErr
+		}
+		authResult, credentialErr = credentials.Get()
+		authConfigured = credentialErr == nil
+	} else {
+		bound, document, preferences, authResult, identityAvailable, err = loadOptionalIdentityConfig(cmd, deps)
+		if err != nil {
+			return err
+		}
+		authConfigured = identityAvailable
 	}
-	authResult, authErr := credentials.Get()
-	configured := authErr == nil
+	settings := document.Effective()
+	if identityAvailable {
+		settings = config.Merge(document, preferences)
+	}
 
 	if rootOptions.json {
 		payload := map[string]interface{}{
-			"ok":                          true,
-			"path":                        path,
-			"disabled":                    settings.Disabled,
-			"message_prefix":              settings.MessagePrefix,
-			"message_prefix_source":       prefixSource(document),
-			"message_presentation":        settings.MessagePresentation,
-			"message_presentation_source": presentationSource(document),
-			"deny_mutations":              mutationStrings(settings.DeniedMutations),
-			"formatting":                  formattingStrings(settings.Formatting),
-			"auth_configured":             configured,
-			"auth_ignored":                configured && settings.Disabled,
+			"ok":              true,
+			"path":            path,
+			"disabled":        settings.Disabled,
+			"deny_mutations":  mutationStrings(settings.DeniedMutations),
+			"auth_configured": authConfigured,
+			"auth_ignored":    authConfigured && settings.Disabled,
 		}
-		if configured {
+		if authConfigured {
 			payload["auth_source"] = authResult.Source
+		}
+		if identityAvailable {
+			payload["identity"] = map[string]string{"team_id": bound.ActiveIdentity.TeamID, "user_id": bound.ActiveIdentity.UserID}
+			payload["message_prefix"] = settings.MessagePrefix
+			payload["message_prefix_source"] = prefixSource(preferences)
+			payload["message_presentation"] = settings.MessagePresentation
+			payload["message_presentation_source"] = presentationSource(preferences)
+			payload["formatting"] = formattingStrings(settings.Formatting)
 		}
 		return writeJSON(cmd, payload)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Path: %s\n", path)
+	writeConfigLocation(cmd, path)
 	if settings.Disabled {
 		fmt.Fprintln(cmd.OutOrStdout(), "Tool: disabled")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "Tool: enabled")
 	}
-	if configured {
+	fmt.Fprintf(cmd.OutOrStdout(), "Denied mutations: %s\n", mutationList(settings.DeniedMutations))
+	if authConfigured {
 		fmt.Fprintf(cmd.OutOrStdout(), "Authentication: configured (%s, %s)\n", authResult.Source, auth.MaskToken(authResult.Token))
 		if settings.Disabled {
 			fmt.Fprintln(cmd.OutOrStdout(), "Authentication use: ignored while slk is disabled")
@@ -382,12 +415,79 @@ func runConfigSummary(cmd *cobra.Command, deps Dependencies, rootOptions *rootOp
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "Authentication: not configured")
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Message prefix (%s): %q\n", prefixSource(document), settings.MessagePrefix)
-	fmt.Fprintf(cmd.OutOrStdout(), "Message presentation (%s): %s\n", presentationSource(document), settings.MessagePresentation)
-	fmt.Fprintf(cmd.OutOrStdout(), "Enabled formatting: %s\n", textformat.List(settings.Formatting))
-	fmt.Fprintf(cmd.OutOrStdout(), "Denied mutations: %s\n", mutationList(settings.DeniedMutations))
+	if identityAvailable {
+		fmt.Fprintf(cmd.OutOrStdout(), "Canonical identity: %s / %s\n", bound.ActiveIdentity.TeamID, bound.ActiveIdentity.UserID)
+		fmt.Fprintf(cmd.OutOrStdout(), "Message prefix (%s): %q\n", prefixSource(preferences), settings.MessagePrefix)
+		fmt.Fprintf(cmd.OutOrStdout(), "Message presentation (%s): %s\n", presentationSource(preferences), settings.MessagePresentation)
+		fmt.Fprintf(cmd.OutOrStdout(), "Enabled formatting: %s\n", textformat.List(settings.Formatting))
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), "Identity preferences: unavailable until Slack authentication is validated")
+	}
 	if settings.Disabled {
 		fmt.Fprintln(cmd.OutOrStdout(), "Agent guidance: ask the user for permission before running 'slk config enable'.")
+	}
+	return nil
+}
+
+func requireIdentityPreferencesEnabled(deps Dependencies) error {
+	settings, err := deps.config()
+	if err != nil {
+		return err
+	}
+	if settings.Disabled {
+		return identityPreferencesDisabledError()
+	}
+	return nil
+}
+
+func loadRequiredIdentityConfig(cmd *cobra.Command, deps Dependencies) (Dependencies, config.Document, config.Preferences, config.Store, string, error) {
+	bound, document, preferences, _, configured, err := loadOptionalIdentityConfig(cmd, deps)
+	if err != nil {
+		return deps, config.Document{}, config.Preferences{}, nil, "", err
+	}
+	if !configured {
+		return deps, config.Document{}, config.Preferences{}, nil, "", authRequiredError()
+	}
+	store, err := bound.configStore()
+	if err != nil {
+		return deps, config.Document{}, config.Preferences{}, nil, "", err
+	}
+	path, err := store.Path()
+	if err != nil {
+		return deps, config.Document{}, config.Preferences{}, nil, "", configLoadError(err)
+	}
+	return bound, document, preferences, store, path, nil
+}
+
+func loadOptionalIdentityConfig(cmd *cobra.Command, deps Dependencies) (Dependencies, config.Document, config.Preferences, auth.Result, bool, error) {
+	credentials, err := deps.credentialStore()
+	if err != nil {
+		return deps, config.Document{}, config.Preferences{}, auth.Result{}, false, err
+	}
+	authResult, err := credentials.Get()
+	if err != nil {
+		return deps, config.Document{}, config.Preferences{}, auth.Result{}, false, nil
+	}
+	identityResult, err := deps.validateToken(cmd.Context(), authResult.Token, cmd.ErrOrStderr())
+	if err != nil {
+		return deps, config.Document{}, config.Preferences{}, auth.Result{}, false, identityUnavailableError(err)
+	}
+	bound, document, preferences, err := deps.bindIdentity(authResult.Token, identityResult)
+	if err != nil {
+		return deps, config.Document{}, config.Preferences{}, auth.Result{}, false, err
+	}
+	return bound, document, preferences, authResult, true, nil
+}
+
+func saveIdentityConfigDocument(deps Dependencies, store config.Store, document config.Document, preferences config.Preferences) error {
+	if deps.ActiveIdentity == nil {
+		return internalError()
+	}
+	if err := document.SetPreferences(*deps.ActiveIdentity, preferences); err != nil {
+		return configSaveError(err)
+	}
+	if err := store.Save(document); err != nil {
+		return configSaveError(err)
 	}
 	return nil
 }
@@ -401,7 +501,7 @@ func loadConfigDocument(deps Dependencies) (config.Document, config.Store, strin
 	if err != nil {
 		return config.Document{}, nil, "", configLoadError(err)
 	}
-	document, err := store.LoadDocument()
+	document, err := store.Load()
 	if err != nil {
 		return config.Document{}, nil, "", configLoadError(err)
 	}
@@ -428,50 +528,67 @@ func setMutationDenied(document *config.Document, mutation config.Mutation, deni
 	}
 }
 
-func setFormattingEnabled(document *config.Document, module textformat.Module, enabled bool) {
-	filtered := document.Formatting[:0]
-	for _, existing := range document.Formatting {
+func setFormattingEnabled(preferences *config.Preferences, module textformat.Module, enabled bool) {
+	filtered := preferences.Formatting[:0]
+	for _, existing := range preferences.Formatting {
 		if existing != module {
 			filtered = append(filtered, existing)
 		}
 	}
-	document.Formatting = filtered
+	preferences.Formatting = filtered
 	if enabled {
-		document.Formatting = append(document.Formatting, module)
+		preferences.Formatting = append(preferences.Formatting, module)
 	}
+}
+
+func writeConfigLocation(cmd *cobra.Command, path string) {
+	fmt.Fprintf(cmd.OutOrStdout(), "Configuration: %s\n", path)
 }
 
 func writeConfigReceipt(cmd *cobra.Command, rootOptions *rootOptions, action, path string, settings config.Settings) error {
 	if rootOptions.json {
 		return writeJSON(cmd, map[string]interface{}{
+			"ok":             true,
+			"action":         action,
+			"path":           path,
+			"disabled":       settings.Disabled,
+			"deny_mutations": mutationStrings(settings.DeniedMutations),
+		})
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s.\n", strings.ToUpper(action[:1])+action[1:])
+	writeConfigLocation(cmd, path)
+	return nil
+}
+
+func writeIdentityConfigReceipt(cmd *cobra.Command, rootOptions *rootOptions, action, path string, settings config.Settings) error {
+	if rootOptions.json {
+		return writeJSON(cmd, map[string]interface{}{
 			"ok":                   true,
 			"action":               action,
 			"path":                 path,
-			"disabled":             settings.Disabled,
 			"message_prefix":       settings.MessagePrefix,
 			"message_presentation": settings.MessagePresentation,
-			"deny_mutations":       mutationStrings(settings.DeniedMutations),
 			"formatting":           formattingStrings(settings.Formatting),
 		})
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s.\n", strings.ToUpper(action[:1])+action[1:])
-	fmt.Fprintf(cmd.OutOrStdout(), "Configuration: %s\n", path)
+	writeConfigLocation(cmd, path)
 	fmt.Fprintf(cmd.OutOrStdout(), "Message presentation: %s\n", settings.MessagePresentation)
 	return nil
 }
 
-func prefixSource(document config.Document) string {
-	if document.MessagePrefix == nil {
+func prefixSource(preferences config.Preferences) string {
+	if preferences.MessagePrefix == nil {
 		return "default"
 	}
-	if *document.MessagePrefix == "" {
+	if *preferences.MessagePrefix == "" {
 		return "disabled"
 	}
 	return "custom"
 }
 
-func presentationSource(document config.Document) string {
-	if document.MessagePresentation == nil {
+func presentationSource(preferences config.Preferences) string {
+	if preferences.MessagePresentation == nil {
 		return "default"
 	}
 	return "custom"

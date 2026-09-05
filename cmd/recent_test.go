@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/format"
 )
 
 func TestRecentSearchQueryStartsOneDayBeforeExactCutoff(t *testing.T) {
@@ -71,6 +72,7 @@ func TestFormatRecentProvidesTemporalAndNavigationSignals(t *testing.T) {
 			Latest: api.SearchMatch{
 				Type: "message", User: "U12345678", Text: "rollout paused", Ts: "1700000400.000001",
 				Channel: api.SearchChannel{ID: "C12345678", Name: "deployments"}, Permalink: permalink,
+				Files: []api.File{{ID: "F12345678", Name: "report.txt"}},
 			},
 		}},
 	}
@@ -79,11 +81,14 @@ func TestFormatRecentProvidesTemporalAndNavigationSignals(t *testing.T) {
 	got := formatRecent(snapshot, "U12345678", cutoff, time.Unix(1_700_004_600, 0), recentAll, resolveUser)
 	for _, want := range []string{
 		"Recent conversations",
+		format.SlackContentNotice,
+		format.SearchContentNotice,
 		"Search-derived from 2 scanned hits (9 matched the broad date query)",
 		"ordered by each conversation's newest searchable message",
 		"1 conversation.",
 		"#deployments — 1h ago",
-		"@owner (me): rollout paused",
+		"@owner (me): │ rollout paused",
+		"[file] report.txt (0B) — slk download F12345678",
 		"Open: slk open '" + permalink + "'",
 		"Read: slk read C12345678 --after 2023-11-14T22:13:20Z",
 	} {
@@ -113,12 +118,13 @@ func TestRecentJSONNamesLatestSearchHitHonestly(t *testing.T) {
 		}},
 	}
 
-	got := recentJSON(snapshot, "U12345678", cutoff, recentAll)
-	if !got.OK || !got.SearchDerived || got.QueryTotalHits != 5 || got.ScannedHits != 3 {
+	got := recentJSON(snapshot, "U12345678", cutoff, recentAll, func(id string) string { return "resolved-" + id })
+	if !got.OK || got.ContentTrust != format.SlackContentTrust || !got.SearchDerived || got.QueryTotalHits != 5 || got.ScannedHits != 3 {
 		t.Fatalf("recent payload = %#v", got)
 	}
 	conversation := got.Conversations[0]
-	if conversation.Kind != recentDM || conversation.LatestSearchHit.Timestamp == "" {
+	if conversation.Kind != recentDM || conversation.LatestSearchHit.Timestamp == "" ||
+		conversation.LatestSearchHit.SemanticContent.Representation != format.SearchTextOnly {
 		t.Fatalf("conversation payload = %#v", conversation)
 	}
 	if conversation.ReadCommand != "slk read D12345678 --after 2023-11-14T22:13:20Z" {

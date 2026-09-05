@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/leezenn/slk/internal/api"
 	"github.com/leezenn/slk/internal/auth"
 )
 
@@ -20,6 +23,69 @@ func TestInteractiveAuthPromptsWhenCredentialExists(t *testing.T) {
 	}
 	if store.getCalls != 0 {
 		t.Fatalf("interactive auth inspected existing credential %d times", store.getCalls)
+	}
+}
+
+func TestAuthRejectsIncompleteCanonicalIdentityBeforeCredentialOrNamespaceMutation(t *testing.T) {
+	for _, result := range []*api.AuthTestResult{
+		{TeamID: "", UserID: "U111"},
+		{TeamID: "T111", UserID: ""},
+	} {
+		credentials := &fakeCredentialStore{getResult: auth.Result{Token: "xoxp-old", Source: auth.SourceKeychain}}
+		configuration := &fakeConfigStore{}
+		deps := isolatedDependencies(credentials)
+		deps.Configuration = configuration
+		deps.ValidateToken = func(context.Context, string, io.Writer) (*api.AuthTestResult, error) { return result, nil }
+
+		code, stdout, stderr := runIsolated(t, deps, context.Background(), "auth", "xoxp-new")
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "complete canonical identity") {
+			t.Fatalf("incomplete auth = code %d stdout %q stderr %q", code, stdout, stderr)
+		}
+		if credentials.setCalls != 0 || credentials.getResult.Token != "xoxp-old" || configuration.saveCalls != 0 {
+			t.Fatalf("incomplete auth mutated state: credentials %#v config %#v", credentials, configuration)
+		}
+	}
+}
+
+func TestReauthenticationFailurePreservesStoredCredential(t *testing.T) {
+	tests := []struct {
+		name       string
+		validate   func(context.Context, string, io.Writer) (*api.AuthTestResult, error)
+		loadErr    error
+		wantPhrase string
+	}{
+		{
+			name: "auth validation failure",
+			validate: func(context.Context, string, io.Writer) (*api.AuthTestResult, error) {
+				return nil, errors.New("synthetic auth failure")
+			},
+			wantPhrase: "Slack rejected the credential",
+		},
+		{
+			name: "config load failure",
+			validate: func(context.Context, string, io.Writer) (*api.AuthTestResult, error) {
+				return &api.AuthTestResult{TeamID: "T222", UserID: "U222"}, nil
+			},
+			loadErr:    errors.New("synthetic config failure"),
+			wantPhrase: "could not load its configuration",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			credentials := &fakeCredentialStore{getResult: auth.Result{Token: "xoxp-old", Source: auth.SourceKeychain}}
+			configuration := &fakeConfigStore{loadErr: test.loadErr}
+			deps := isolatedDependencies(credentials)
+			deps.Configuration = configuration
+			deps.ValidateToken = test.validate
+
+			code, stdout, stderr := runIsolated(t, deps, context.Background(), "auth", "xoxp-new")
+			if code != 1 || stdout != "" || !strings.Contains(stderr, test.wantPhrase) {
+				t.Fatalf("reauth failure = code %d stdout %q stderr %q", code, stdout, stderr)
+			}
+			if credentials.setCalls != 0 || credentials.getResult.Token != "xoxp-old" || configuration.saveCalls != 0 {
+				t.Fatalf("reauth failure replaced prior state: credentials %#v config %#v", credentials, configuration)
+			}
+		})
 	}
 }
 

@@ -35,7 +35,7 @@ func TestAuthTestUsesConfiguredContextAndReturnsScopes(t *testing.T) {
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"user_id":"U12345678"}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"team_id":"T12345678","user_id":"U12345678"}`)),
 			Header: http.Header{
 				"X-Oauth-Scopes": {"users:read, channels:read, users:read"},
 			},
@@ -52,6 +52,73 @@ func TestAuthTestUsesConfiguredContextAndReturnsScopes(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("configured transport was not called")
+	}
+}
+
+func TestAuthTestRejectsIncompleteCanonicalIdentity(t *testing.T) {
+	for _, body := range []string{
+		`{"ok":true,"user_id":"U12345678"}`,
+		`{"ok":true,"team_id":"T12345678"}`,
+		`{"ok":true,"team_id":" ","user_id":"U12345678"}`,
+		`{"ok":true,"team_id":"T12345678","user_id":" "}`,
+		`{"ok":true,"team_id":" T12345678","user_id":"U12345678"}`,
+		`{"ok":true,"team_id":"T12345678","user_id":"U12345678 "}`,
+	} {
+		client := NewClient("test-token")
+		client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: req}, nil
+		})
+		if _, err := client.AuthTest(); err == nil || !strings.Contains(err.Error(), "omitted or returned non-canonical") {
+			t.Fatalf("AuthTest body %s error = %v", body, err)
+		}
+	}
+}
+
+func TestSearchMessagesSupportsOptionalNumberedPages(t *testing.T) {
+	client := NewClient("test-token")
+	requests := 0
+	client.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Path != "/api/search.messages" {
+			t.Fatalf("request path = %q", req.URL.Path)
+		}
+		if err := req.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if req.Form.Get("query") != "from:<@U123>" || req.Form.Get("count") == "" ||
+			req.Form.Get("sort") != "timestamp" || req.Form.Get("sort_dir") != "desc" {
+			t.Fatalf("search form = %#v", req.Form)
+		}
+		page := req.Form.Get("page")
+		body := `{"ok":true,"messages":{"total":201,"matches":[],"paging":{"count":20,"total":201,"page":1,"pages":11}}}`
+		if page == "" && req.Form.Get("count") != "20" {
+			t.Fatalf("first-page search form = %#v", req.Form)
+		}
+		if page != "" {
+			if page != "2" || req.Form.Get("count") != "100" {
+				t.Fatalf("paged search form = %#v", req.Form)
+			}
+			body = `{"ok":true,"messages":{"total":201,"matches":[],"pagination":{"first":101,"last":200,"page":2,"page_count":3,"per_page":100,"total_count":201}}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: req}, nil
+	})
+
+	first, err := client.SearchMessages("from:<@U123>", 20)
+	if err != nil || first.Messages.Paging.Page != 1 || first.Messages.Paging.Pages != 11 {
+		t.Fatalf("SearchMessages() = %#v, %v", first, err)
+	}
+	second, err := client.SearchMessagesPage("from:<@U123>", 100, 2)
+	if err != nil || second.Messages.Pagination.Page != 2 || second.Messages.Pagination.PageCount != 3 ||
+		second.Messages.Pagination.TotalCount != 201 {
+		t.Fatalf("SearchMessagesPage() = %#v, %v", second, err)
+	}
+	for _, page := range []int{0, 101} {
+		if _, err := client.SearchMessagesPage("from:<@U123>", 100, page); err == nil {
+			t.Fatalf("SearchMessagesPage(..., %d) succeeded", page)
+		}
+	}
+	if requests != 2 {
+		t.Fatalf("HTTP requests = %d, want 2", requests)
 	}
 }
 

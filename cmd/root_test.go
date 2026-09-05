@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,16 +16,19 @@ import (
 	"github.com/leezenn/slk/internal/auth"
 	"github.com/leezenn/slk/internal/config"
 	"github.com/leezenn/slk/internal/presentation"
+	"github.com/leezenn/slk/internal/textformat"
+	"github.com/spf13/cobra"
 )
 
 type fakeConfigStore struct {
-	document  config.Document
-	loadErr   error
-	saveErr   error
-	pathErr   error
-	path      string
-	loadCalls int
-	saveCalls int
+	document          config.Document
+	identityDocuments map[string]config.Preferences
+	loadErr           error
+	saveErr           error
+	pathErr           error
+	path              string
+	loadCalls         int
+	saveCalls         int
 }
 
 func (f *fakeConfigStore) Path() (string, error) {
@@ -37,20 +41,16 @@ func (f *fakeConfigStore) Path() (string, error) {
 	return f.path, nil
 }
 
-func (f *fakeConfigStore) Load() (config.Settings, error) {
-	f.loadCalls++
-	if f.loadErr != nil {
-		return config.Settings{}, f.loadErr
-	}
-	return f.document.Effective(), nil
-}
-
-func (f *fakeConfigStore) LoadDocument() (config.Document, error) {
+func (f *fakeConfigStore) Load() (config.Document, error) {
 	f.loadCalls++
 	if f.loadErr != nil {
 		return config.Document{}, f.loadErr
 	}
-	return f.document, nil
+	document := cloneConfigDocument(f.document)
+	if len(f.identityDocuments) != 0 {
+		document.Identities = cloneIdentityPreferences(f.identityDocuments)
+	}
+	return document, nil
 }
 
 func (f *fakeConfigStore) Save(document config.Document) error {
@@ -58,8 +58,45 @@ func (f *fakeConfigStore) Save(document config.Document) error {
 	if f.saveErr != nil {
 		return f.saveErr
 	}
-	f.document = document
+	f.document = cloneConfigDocument(document)
+	f.identityDocuments = cloneIdentityPreferences(document.Identities)
 	return nil
+}
+
+func cloneConfigDocument(document config.Document) config.Document {
+	document.DeniedMutations = append([]config.Mutation(nil), document.DeniedMutations...)
+	document.Identities = cloneIdentityPreferences(document.Identities)
+	return document
+}
+
+func cloneIdentityPreferences(values map[string]config.Preferences) map[string]config.Preferences {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]config.Preferences, len(values))
+	for namespace, preferences := range values {
+		preferences.Formatting = append([]textformat.Module(nil), preferences.Formatting...)
+		cloned[namespace] = preferences
+	}
+	return cloned
+}
+
+func syntheticIdentity() config.Identity {
+	identity, err := config.NewIdentity("T-SYNTHETIC", "U-SYNTHETIC")
+	if err != nil {
+		panic(err)
+	}
+	return identity
+}
+
+func (f *fakeConfigStore) syntheticIdentityDocument() config.Preferences {
+	namespace, _ := syntheticIdentity().Namespace()
+	return f.identityDocuments[namespace]
+}
+
+func syntheticIdentityDocuments(preferences config.Preferences) map[string]config.Preferences {
+	namespace, _ := syntheticIdentity().Namespace()
+	return map[string]config.Preferences{namespace: preferences}
 }
 
 type fakeCredentialStore struct {
@@ -99,6 +136,9 @@ func isolatedDependencies(store auth.Store) Dependencies {
 		NewClient: func(string) *api.Client {
 			panic("Slack client factory must not be called")
 		},
+		ValidateToken: func(context.Context, string, io.Writer) (*api.AuthTestResult, error) {
+			return &api.AuthTestResult{TeamID: "T-SYNTHETIC", UserID: "U-SYNTHETIC", User: "owner", Team: "Test Workspace"}, nil
+		},
 		Now: func() time.Time { return time.Unix(1_700_000_000, 0) },
 	}
 }
@@ -119,6 +159,10 @@ func forbiddenDependencies(t *testing.T) Dependencies {
 			t.Fatal("test reached the live Slack client seam")
 			return nil
 		},
+		ValidateToken: func(context.Context, string, io.Writer) (*api.AuthTestResult, error) {
+			t.Fatal("test reached Slack identity validation")
+			return nil, nil
+		},
 		Now: func() time.Time {
 			t.Fatal("test reached the clock before cancellation")
 			return time.Time{}
@@ -133,13 +177,8 @@ func (f *forbiddenConfigStore) Path() (string, error) {
 	return "", nil
 }
 
-func (f *forbiddenConfigStore) Load() (config.Settings, error) {
+func (f *forbiddenConfigStore) Load() (config.Document, error) {
 	f.t.Fatal("test reached the config load seam")
-	return config.Settings{}, nil
-}
-
-func (f *forbiddenConfigStore) LoadDocument() (config.Document, error) {
-	f.t.Fatal("test reached the config document seam")
 	return config.Document{}, nil
 }
 
@@ -174,7 +213,7 @@ func runIsolated(t *testing.T, deps Dependencies, ctx context.Context, args ...s
 
 var commandNames = []string{
 	"activity", "auth", "channels", "config", "delete", "download", "edit", "members", "open",
-	"read", "recent", "replace", "reply", "search", "thread", "users", "whoami", "write",
+	"read", "recent", "replace", "reply", "search", "style", "thread", "users", "whoami", "write",
 }
 
 func TestNewRootCommandBuildsFreshRunECommands(t *testing.T) {
@@ -313,15 +352,40 @@ func TestRemovedNotesCommandIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestPresentationHelpReflectsEffectiveConfiguration(t *testing.T) {
+func TestBindCommandIdentityLoadsValidatedIdentityPreferences(t *testing.T) {
+	prefix := "Identity prefix"
+	mode := presentation.AlwaysExpanded
+	preferences := config.Preferences{
+		MessagePrefix:       &prefix,
+		MessagePresentation: &mode,
+		Formatting:          []textformat.Module{textformat.ModuleEmDashToSpacedHyphen},
+	}
+	deps := isolatedDependencies(&fakeCredentialStore{getResult: auth.Result{Token: "xoxp-synthetic", Source: auth.SourceKeychain}})
+	deps.Configuration = &fakeConfigStore{identityDocuments: syntheticIdentityDocuments(preferences)}
+	command := &cobra.Command{Use: "test"}
+	command.SetContext(context.Background())
+	command.SetErr(&bytes.Buffer{})
+
+	bound, settings, err := bindCommandIdentity(command, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.ActiveIdentity == nil || bound.ActiveToken != "xoxp-synthetic" || settings.MessagePrefix != prefix ||
+		settings.MessagePresentation != mode || !settings.FormattingEnabled(textformat.ModuleEmDashToSpacedHyphen) {
+		t.Fatalf("bound identity settings = %#v, %#v", bound, settings)
+	}
+}
+
+func TestPresentationHelpRemainsOfflineAndOmitsIdentityPreference(t *testing.T) {
 	mode := presentation.AlwaysExpanded
 	deps := isolatedDependencies(&fakeCredentialStore{})
-	deps.Configuration = &fakeConfigStore{document: config.Document{MessagePresentation: &mode}}
+	deps.Configuration = &fakeConfigStore{identityDocuments: syntheticIdentityDocuments(config.Preferences{MessagePresentation: &mode})}
 
 	for _, args := range [][]string{{"--help"}, {"write", "--help"}, {"reply", "--help"}, {"replace", "--help"}} {
 		code, stdout, stderr := runIsolated(t, deps, context.Background(), args...)
-		if code != 0 || stderr != "" || !strings.Contains(stdout, "Effective default: always-expanded") ||
-			!strings.Contains(stdout, "--presentation") {
+		if code != 0 || stderr != "" || !strings.Contains(stdout, "Built-in default: slack-managed") ||
+			!strings.Contains(stdout, "Authenticated identity preferences are applied at execution") ||
+			strings.Contains(stdout, "Built-in default: always-expanded") || !strings.Contains(stdout, "--presentation") {
 			t.Fatalf("presentation help %v = code %d stdout %q stderr %q", args, code, stdout, stderr)
 		}
 	}

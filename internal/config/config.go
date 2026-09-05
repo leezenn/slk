@@ -50,16 +50,39 @@ type Settings struct {
 	Formatting          []textformat.Module
 }
 
-// Document preserves explicit versus defaulted values for config mutations.
-type Document struct {
-	Disabled            bool
-	MessagePrefix       *string
-	MessagePresentation *presentation.Mode
-	DeniedMutations     []Mutation
-	Formatting          []textformat.Module
+// Preferences contains settings owned by one authenticated Slack identity.
+type Preferences struct {
+	MessagePrefix       *string             `json:"message_prefix,omitempty"`
+	MessagePresentation *presentation.Mode  `json:"message_presentation,omitempty"`
+	Formatting          []textformat.Module `json:"formatting,omitempty"`
 }
 
-// Defaults returns effective settings when the optional config file is absent.
+// Document is the complete configuration persisted in one file.
+type Document struct {
+	Disabled        bool                   `json:"disabled,omitempty"`
+	DeniedMutations []Mutation             `json:"deny_mutations,omitempty"`
+	Identities      map[string]Preferences `json:"identities,omitempty"`
+
+	// These top-level preference fields read the released flat format. BindIdentity
+	// moves them into the first validated identity entry.
+	LegacyMessagePrefix       *string             `json:"message_prefix,omitempty"`
+	LegacyMessagePresentation *presentation.Mode  `json:"message_presentation,omitempty"`
+	LegacyFormatting          []textformat.Module `json:"formatting,omitempty"`
+}
+
+// Store owns the one stable configuration file.
+type Store interface {
+	Path() (string, error)
+	Load() (Document, error)
+	Save(Document) error
+}
+
+type fileStore struct{}
+
+// NewStore returns the concrete per-user config store.
+func NewStore() Store { return fileStore{} }
+
+// Defaults returns effective settings when configuration is absent.
 func Defaults() Settings {
 	return Settings{
 		MessagePrefix:       DefaultMessagePrefix,
@@ -67,19 +90,90 @@ func Defaults() Settings {
 	}
 }
 
-// Effective applies built-in defaults to a persisted document.
+// Effective applies machine policy and built-in preference defaults.
 func (d Document) Effective() Settings {
 	settings := Defaults()
 	settings.Disabled = d.Disabled
-	if d.MessagePrefix != nil {
-		settings.MessagePrefix = *d.MessagePrefix
-	}
-	if d.MessagePresentation != nil {
-		settings.MessagePresentation = *d.MessagePresentation
-	}
 	settings.DeniedMutations = append([]Mutation(nil), d.DeniedMutations...)
-	settings.Formatting = append([]textformat.Module(nil), d.Formatting...)
 	return settings
+}
+
+// Effective applies built-in defaults to identity preferences.
+func (p Preferences) Effective() Settings {
+	settings := Defaults()
+	if p.MessagePrefix != nil {
+		settings.MessagePrefix = *p.MessagePrefix
+	}
+	if p.MessagePresentation != nil {
+		settings.MessagePresentation = *p.MessagePresentation
+	}
+	settings.Formatting = append([]textformat.Module(nil), p.Formatting...)
+	return settings
+}
+
+// Merge combines machine policy with one identity's preferences.
+func Merge(machine Document, identity Preferences) Settings {
+	settings := machine.Effective()
+	preferences := identity.Effective()
+	settings.MessagePrefix = preferences.MessagePrefix
+	settings.MessagePresentation = preferences.MessagePresentation
+	settings.Formatting = preferences.Formatting
+	return settings
+}
+
+// Preferences returns one identity's stored preferences, or defaults when absent.
+func (d Document) Preferences(identity Identity) (Preferences, error) {
+	namespace, err := identity.Namespace()
+	if err != nil {
+		return Preferences{}, err
+	}
+	return clonePreferences(d.Identities[namespace]), nil
+}
+
+// BindIdentity assigns released flat preferences to the first validated identity.
+// The caller saves the document when changed is true.
+func (d *Document) BindIdentity(identity Identity) (preferences Preferences, changed bool, err error) {
+	namespace, err := identity.Namespace()
+	if err != nil {
+		return Preferences{}, false, err
+	}
+	if preferences, ok := d.Identities[namespace]; ok {
+		return clonePreferences(preferences), false, nil
+	}
+	preferences = d.legacyPreferences()
+	if !hasPreferences(preferences) {
+		return Preferences{}, false, nil
+	}
+	if len(d.Identities) != 0 {
+		return Preferences{}, false, errors.New("legacy preferences cannot be assigned because identity preferences already exist")
+	}
+	d.clearLegacyPreferences()
+	if d.Identities == nil {
+		d.Identities = make(map[string]Preferences)
+	}
+	d.Identities[namespace] = clonePreferences(preferences)
+	return preferences, true, nil
+}
+
+// SetPreferences replaces one identity's preferences in the aggregate document.
+func (d *Document) SetPreferences(identity Identity, preferences Preferences) error {
+	namespace, err := identity.Namespace()
+	if err != nil {
+		return err
+	}
+	preferences = clonePreferences(preferences)
+	if err := validatePreferences(&preferences); err != nil {
+		return err
+	}
+	if !hasPreferences(preferences) {
+		delete(d.Identities, namespace)
+		return nil
+	}
+	if d.Identities == nil {
+		d.Identities = make(map[string]Preferences)
+	}
+	d.Identities[namespace] = preferences
+	return nil
 }
 
 // ParseMutation resolves a shipped Slack mutation command name.
@@ -109,29 +203,7 @@ func (s Settings) FormattingEnabled(module textformat.Module) bool {
 	return false
 }
 
-// Store owns the stable config path and validated persistence operations.
-type Store interface {
-	Path() (string, error)
-	Load() (Settings, error)
-	LoadDocument() (Document, error)
-	Save(document Document) error
-}
-
-type fileStore struct{}
-
-// NewStore returns the concrete per-user config store.
-func NewStore() Store { return fileStore{} }
-
-type fileSettings struct {
-	Disabled            bool               `json:"disabled,omitempty"`
-	MessagePrefix       *string            `json:"message_prefix,omitempty"`
-	MessagePresentation *presentation.Mode `json:"message_presentation,omitempty"`
-	DeniedMutations     []string           `json:"deny_mutations,omitempty"`
-	Formatting          []string           `json:"formatting,omitempty"`
-}
-
-// Path returns the stable per-user configuration path.
-func Path() (string, error) {
+func configBase() (string, error) {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		home, err := os.UserHomeDir()
@@ -142,41 +214,30 @@ func Path() (string, error) {
 	} else if !filepath.IsAbs(base) {
 		return "", errors.New("XDG_CONFIG_HOME must be an absolute path")
 	}
-	return filepath.Join(base, "slk", "config.json"), nil
+	return filepath.Join(base, "slk"), nil
 }
 
-func (fileStore) Path() (string, error) { return Path() }
+// Path returns the stable configuration path.
+func Path() (string, error) { return fileStore{}.Path() }
 
-// Load reads the optional user configuration and applies defaults.
-func Load() (Settings, error) { return fileStore{}.Load() }
-
-func (fileStore) Load() (Settings, error) {
-	document, err := fileStore{}.LoadDocument()
+func (fileStore) Path() (string, error) {
+	base, err := configBase()
 	if err != nil {
-		return Settings{}, err
+		return "", err
 	}
-	return document.Effective(), nil
+	return filepath.Join(base, "config.json"), nil
 }
 
-func (fileStore) LoadDocument() (Document, error) {
-	path, err := Path()
+func (f fileStore) Load() (Document, error) {
+	path, err := f.Path()
 	if err != nil {
 		return Document{}, err
 	}
-	return LoadDocumentFile(path)
+	return LoadFile(path)
 }
 
-// LoadFile reads one explicit configuration path and applies defaults.
-func LoadFile(path string) (Settings, error) {
-	document, err := LoadDocumentFile(path)
-	if err != nil {
-		return Settings{}, err
-	}
-	return document.Effective(), nil
-}
-
-// LoadDocumentFile reads one explicit configuration path. A missing file is empty.
-func LoadDocumentFile(path string) (Document, error) {
+// LoadFile reads one complete configuration document. A missing file is empty.
+func LoadFile(path string) (Document, error) {
 	contents, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Document{}, nil
@@ -185,80 +246,52 @@ func LoadDocumentFile(path string) (Document, error) {
 		return Document{}, fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	var stored fileSettings
+	var document Document
 	decoder := json.NewDecoder(strings.NewReader(string(contents)))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&stored); err != nil {
-		return Document{}, fmt.Errorf("parsing %s: %w", path, err)
+	if err := decoder.Decode(&document); err != nil {
+		return Document{}, configParseError(path, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("multiple JSON values")
 		}
-		return Document{}, fmt.Errorf("parsing %s: %w", path, err)
+		return Document{}, configParseError(path, err)
 	}
 
-	document := Document{
-		Disabled:            stored.Disabled,
-		MessagePrefix:       stored.MessagePrefix,
-		MessagePresentation: stored.MessagePresentation,
-	}
-	for _, raw := range stored.DeniedMutations {
-		mutation, known := ParseMutation(raw)
-		if !known {
-			return Document{}, fmt.Errorf("parsing %s: deny_mutations contains unknown command %q", path, raw)
-		}
-		document.DeniedMutations = append(document.DeniedMutations, mutation)
-	}
-	for _, raw := range stored.Formatting {
-		module, known := textformat.ParseModule(raw)
-		if !known {
-			return Document{}, fmt.Errorf("parsing %s: formatting contains unknown module %q", path, raw)
-		}
-		document.Formatting = append(document.Formatting, module)
-	}
 	if err := validateDocument(&document); err != nil {
-		return Document{}, fmt.Errorf("parsing %s: %w", path, err)
+		return Document{}, configParseError(path, err)
 	}
 	return document, nil
 }
 
-func (fileStore) Save(document Document) error {
-	path, err := Path()
+func configParseError(path string, err error) error {
+	return fmt.Errorf("parsing %s: %w", path, err)
+}
+
+func (f fileStore) Save(document Document) error {
+	path, err := f.Path()
 	if err != nil {
 		return err
 	}
 	return SaveFile(path, document)
 }
 
-// SaveFile validates and atomically writes one explicit configuration path.
+// SaveFile validates and atomically replaces one complete configuration file.
 func SaveFile(path string, document Document) error {
-	document.DeniedMutations = append([]Mutation(nil), document.DeniedMutations...)
-	document.Formatting = append([]textformat.Module(nil), document.Formatting...)
+	document = cloneDocument(document)
 	if err := validateDocument(&document); err != nil {
 		return err
 	}
 
-	stored := struct {
-		Disabled            bool                `json:"disabled,omitempty"`
-		MessagePrefix       *string             `json:"message_prefix,omitempty"`
-		MessagePresentation *presentation.Mode  `json:"message_presentation,omitempty"`
-		DeniedMutations     []Mutation          `json:"deny_mutations,omitempty"`
-		Formatting          []textformat.Module `json:"formatting,omitempty"`
-	}{
-		Disabled:            document.Disabled,
-		MessagePrefix:       document.MessagePrefix,
-		MessagePresentation: document.MessagePresentation,
-		DeniedMutations:     append([]Mutation(nil), document.DeniedMutations...),
-		Formatting:          append([]textformat.Module(nil), document.Formatting...),
+	sort.Slice(document.DeniedMutations, func(i, j int) bool { return document.DeniedMutations[i] < document.DeniedMutations[j] })
+	sort.Slice(document.LegacyFormatting, func(i, j int) bool { return document.LegacyFormatting[i] < document.LegacyFormatting[j] })
+	for namespace, preferences := range document.Identities {
+		sort.Slice(preferences.Formatting, func(i, j int) bool { return preferences.Formatting[i] < preferences.Formatting[j] })
+		document.Identities[namespace] = preferences
 	}
-	sort.Slice(stored.DeniedMutations, func(i, j int) bool {
-		return stored.DeniedMutations[i] < stored.DeniedMutations[j]
-	})
-	sort.Slice(stored.Formatting, func(i, j int) bool {
-		return stored.Formatting[i] < stored.Formatting[j]
-	})
-	contents, err := json.MarshalIndent(stored, "", "  ")
+
+	contents, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}
@@ -268,13 +301,15 @@ func SaveFile(path string, document Document) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
+	if err := protectDirectory(directory); err != nil {
+		return err
+	}
 	temporary, err := os.CreateTemp(directory, ".config-*.tmp")
 	if err != nil {
 		return fmt.Errorf("creating temporary config: %w", err)
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-
 	if err := temporary.Chmod(0o600); err != nil {
 		temporary.Close()
 		return fmt.Errorf("protecting temporary config: %w", err)
@@ -297,14 +332,47 @@ func SaveFile(path string, document Document) error {
 }
 
 func validateDocument(document *Document) error {
-	if document.MessagePresentation != nil {
-		if _, known := presentation.Parse(string(*document.MessagePresentation)); !known {
+	document.DeniedMutations = unique(document.DeniedMutations)
+	for _, mutation := range document.DeniedMutations {
+		if _, known := knownMutations[mutation]; !known {
+			return fmt.Errorf("deny_mutations contains unknown command %q", mutation)
+		}
+	}
+	legacy := document.legacyPreferences()
+	if hasPreferences(legacy) {
+		if err := validatePreferences(&legacy); err != nil {
+			return err
+		}
+		document.setLegacyPreferences(legacy)
+		if len(document.Identities) != 0 {
+			return errors.New("legacy and identity preferences cannot coexist")
+		}
+	}
+	for namespace, preferences := range document.Identities {
+		if !validNamespace(namespace) {
+			return errors.New("identities contains an invalid opaque identity key")
+		}
+		preferences = clonePreferences(preferences)
+		if err := validatePreferences(&preferences); err != nil {
+			return fmt.Errorf("identity %s: %w", namespace, err)
+		}
+		if hasPreferences(preferences) {
+			document.Identities[namespace] = preferences
+		} else {
+			delete(document.Identities, namespace)
+		}
+	}
+	return nil
+}
+
+func validatePreferences(preferences *Preferences) error {
+	if preferences.MessagePresentation != nil {
+		if _, known := presentation.Parse(string(*preferences.MessagePresentation)); !known {
 			return fmt.Errorf("message_presentation must be %q or %q", presentation.SlackManaged, presentation.AlwaysExpanded)
 		}
 	}
-
-	if document.MessagePrefix != nil {
-		prefix := *document.MessagePrefix
+	if preferences.MessagePrefix != nil {
+		prefix := *preferences.MessagePrefix
 		if prefix != "" && strings.TrimSpace(prefix) == "" {
 			return errors.New("message_prefix must be empty or contain visible text")
 		}
@@ -313,32 +381,87 @@ func validateDocument(document *Document) error {
 		}
 	}
 
-	seen := make(map[Mutation]struct{}, len(document.DeniedMutations))
-	unique := document.DeniedMutations[:0]
-	for _, mutation := range document.DeniedMutations {
-		if _, known := knownMutations[mutation]; !known {
-			return fmt.Errorf("deny_mutations contains unknown command %q", mutation)
-		}
-		if _, duplicate := seen[mutation]; duplicate {
-			continue
-		}
-		seen[mutation] = struct{}{}
-		unique = append(unique, mutation)
-	}
-	document.DeniedMutations = unique
-
-	seenFormatting := make(map[textformat.Module]struct{}, len(document.Formatting))
-	uniqueFormatting := document.Formatting[:0]
-	for _, module := range document.Formatting {
+	preferences.Formatting = unique(preferences.Formatting)
+	for _, module := range preferences.Formatting {
 		if _, known := textformat.ParseModule(string(module)); !known {
 			return fmt.Errorf("formatting contains unknown module %q", module)
 		}
-		if _, duplicate := seenFormatting[module]; duplicate {
+	}
+	return nil
+}
+
+func hasPreferences(preferences Preferences) bool {
+	return preferences.MessagePrefix != nil || preferences.MessagePresentation != nil || len(preferences.Formatting) != 0
+}
+
+func unique[T comparable](values []T) []T {
+	seen := make(map[T]struct{}, len(values))
+	result := make([]T, 0, len(values))
+	for _, value := range values {
+		if _, duplicate := seen[value]; duplicate {
 			continue
 		}
-		seenFormatting[module] = struct{}{}
-		uniqueFormatting = append(uniqueFormatting, module)
+		seen[value] = struct{}{}
+		result = append(result, value)
 	}
-	document.Formatting = uniqueFormatting
+	return result
+}
+
+func clonePreferences(preferences Preferences) Preferences {
+	if preferences.MessagePrefix != nil {
+		value := *preferences.MessagePrefix
+		preferences.MessagePrefix = &value
+	}
+	if preferences.MessagePresentation != nil {
+		value := *preferences.MessagePresentation
+		preferences.MessagePresentation = &value
+	}
+	preferences.Formatting = append([]textformat.Module(nil), preferences.Formatting...)
+	return preferences
+}
+
+func cloneIdentities(identities map[string]Preferences) map[string]Preferences {
+	if len(identities) == 0 {
+		return nil
+	}
+	cloned := make(map[string]Preferences, len(identities))
+	for namespace, preferences := range identities {
+		cloned[namespace] = clonePreferences(preferences)
+	}
+	return cloned
+}
+
+func (d Document) legacyPreferences() Preferences {
+	return clonePreferences(Preferences{
+		MessagePrefix:       d.LegacyMessagePrefix,
+		MessagePresentation: d.LegacyMessagePresentation,
+		Formatting:          d.LegacyFormatting,
+	})
+}
+
+func (d *Document) setLegacyPreferences(preferences Preferences) {
+	preferences = clonePreferences(preferences)
+	d.LegacyMessagePrefix = preferences.MessagePrefix
+	d.LegacyMessagePresentation = preferences.MessagePresentation
+	d.LegacyFormatting = preferences.Formatting
+}
+
+func (d *Document) clearLegacyPreferences() {
+	d.LegacyMessagePrefix = nil
+	d.LegacyMessagePresentation = nil
+	d.LegacyFormatting = nil
+}
+
+func cloneDocument(document Document) Document {
+	document.DeniedMutations = append([]Mutation(nil), document.DeniedMutations...)
+	document.Identities = cloneIdentities(document.Identities)
+	document.setLegacyPreferences(document.legacyPreferences())
+	return document
+}
+
+func protectDirectory(path string) error {
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("protecting configuration directory: %w", err)
+	}
 	return nil
 }

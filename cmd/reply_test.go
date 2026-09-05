@@ -107,7 +107,7 @@ func TestReplyHelpDocumentsConversationBroadcastWithoutCredentials(t *testing.T)
 		t.Fatalf("reply help = code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 	normalized := strings.Join(strings.Fields(stdout), " ")
-	for _, want := range []string{"--also-send-to-conversation", "--presentation", "Effective default: slack-managed", "surface in the main channel or DM timeline", "message remains in its thread"} {
+	for _, want := range []string{"--also-send-to-conversation", "--presentation", "Built-in default: slack-managed", "Authenticated identity preferences are applied at execution", "surface in the main channel or DM timeline", "message remains in its thread"} {
 		if !strings.Contains(normalized, want) {
 			t.Fatalf("reply help omitted %q: %q", want, stdout)
 		}

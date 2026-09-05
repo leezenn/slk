@@ -79,6 +79,10 @@ func (c *Client) AuthTest() (*AuthTestResult, error) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("parsing auth.test: %w", err)
 	}
+	if strings.TrimSpace(result.TeamID) == "" || strings.TrimSpace(result.UserID) == "" ||
+		strings.TrimSpace(result.TeamID) != result.TeamID || strings.TrimSpace(result.UserID) != result.UserID {
+		return nil, errors.New("parsing auth.test: successful response omitted or returned non-canonical team_id or user_id")
+	}
 	result.Scopes = parseScopes(headers.Get("X-OAuth-Scopes"))
 	return &result, nil
 }
@@ -246,9 +250,10 @@ type SearchResult struct {
 
 // SearchMessages wraps search message matches.
 type SearchMessages struct {
-	Total   int           `json:"total"`
-	Matches []SearchMatch `json:"matches"`
-	Paging  SearchPaging  `json:"paging"`
+	Total      int              `json:"total"`
+	Matches    []SearchMatch    `json:"matches"`
+	Paging     SearchPaging     `json:"paging"`
+	Pagination SearchPagination `json:"pagination"`
 }
 
 // SearchMatch is a single search result match.
@@ -275,6 +280,16 @@ type SearchPaging struct {
 	Total int `json:"total"`
 	Page  int `json:"page"`
 	Pages int `json:"pages"`
+}
+
+// SearchPagination holds Slack's current numbered search pagination fields.
+type SearchPagination struct {
+	First      int `json:"first"`
+	Last       int `json:"last"`
+	Page       int `json:"page"`
+	PageCount  int `json:"page_count"`
+	PerPage    int `json:"per_page"`
+	TotalCount int `json:"total_count"`
 }
 
 // post makes a POST request to a Slack API method.
@@ -703,13 +718,28 @@ func (c *Client) GetReplies(channelID, threadTs string, limit int) ([]Message, e
 	return all, nil
 }
 
-// SearchMessages searches for messages.
+// SearchMessages searches the first page of messages.
 func (c *Client) SearchMessages(query string, limit int) (*SearchResult, error) {
+	return c.searchMessages(query, limit, 0)
+}
+
+// SearchMessagesPage searches one numbered page of messages.
+func (c *Client) SearchMessagesPage(query string, limit, page int) (*SearchResult, error) {
+	if page < 1 || page > 100 {
+		return nil, errors.New("search page must be between 1 and 100")
+	}
+	return c.searchMessages(query, limit, page)
+}
+
+func (c *Client) searchMessages(query string, limit, page int) (*SearchResult, error) {
 	params := url.Values{
 		"query":    {query},
 		"count":    {strconv.Itoa(limit)},
 		"sort":     {"timestamp"},
 		"sort_dir": {"desc"},
+	}
+	if page > 0 {
+		params.Set("page", strconv.Itoa(page))
 	}
 
 	body, err := c.post("search.messages", params)

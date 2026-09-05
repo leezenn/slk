@@ -39,9 +39,12 @@ Setup does not support the inherited --json flag.`,
 }
 
 func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error {
-	document, store, path, err := loadConfigDocument(deps)
+	document, _, _, err := loadConfigDocument(deps)
 	if err != nil {
 		return err
+	}
+	if document.Disabled {
+		return identityPreferencesDisabledError()
 	}
 	credentials, err := deps.credentialStore()
 	if err != nil {
@@ -60,16 +63,19 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 	if authErr != nil {
 		return authRequiredError()
 	}
-
-	settings := document.Effective()
-	fmt.Fprintf(cmd.OutOrStdout(), "Configuration: %s\n", path)
+	bound, document, preferences, store, path, err := loadRequiredIdentityConfig(cmd, deps)
+	if err != nil {
+		return err
+	}
+	settings := config.Merge(document, preferences)
+	writeConfigLocation(cmd, path)
 	if settings.Disabled {
 		fmt.Fprintln(cmd.OutOrStdout(), "Tool: disabled (setup will not enable it)")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "Tool: enabled")
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Message prefix (%s): %q\n", prefixSource(document), settings.MessagePrefix)
-	fmt.Fprintf(cmd.OutOrStdout(), "Message presentation (%s): %s\n", presentationSource(document), settings.MessagePresentation)
+	fmt.Fprintf(cmd.OutOrStdout(), "Message prefix (%s): %q\n", prefixSource(preferences), settings.MessagePrefix)
+	fmt.Fprintf(cmd.OutOrStdout(), "Message presentation (%s): %s\n", presentationSource(preferences), settings.MessagePresentation)
 	fmt.Fprintf(cmd.OutOrStdout(), "Enabled formatting: %s\n", textformat.List(settings.Formatting))
 	fmt.Fprintf(cmd.OutOrStdout(), "Denied mutations: %s\n", mutationList(settings.DeniedMutations))
 
@@ -86,13 +92,14 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 	if err != nil {
 		return err
 	}
+	var prefixUpdate *string
 	if changePrefix {
 		fmt.Fprint(cmd.OutOrStdout(), "New message prefix (empty disables it): ")
 		prefix, err := reader.ReadLine()
 		if err != nil {
 			return err
 		}
-		document.MessagePrefix = &prefix
+		prefixUpdate = &prefix
 	}
 
 	alwaysExpanded, err := promptYesNo(
@@ -108,10 +115,6 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 	if alwaysExpanded {
 		selectedPresentation = presentation.AlwaysExpanded
 	}
-	if document.MessagePresentation != nil || selectedPresentation != presentation.Default() {
-		document.MessagePresentation = &selectedPresentation
-	}
-
 	formatEmDashes, err := promptYesNo(
 		cmd,
 		reader,
@@ -121,7 +124,6 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 	if err != nil {
 		return err
 	}
-	setFormattingEnabled(&document, textformat.ModuleEmDashToSpacedHyphen, formatEmDashes)
 
 	allowReply, err := promptYesNo(cmd, reader, "Allow thread replies?", !settings.MutationDenied(config.MutationReply))
 	if err != nil {
@@ -143,15 +145,22 @@ func runConfigSetup(cmd *cobra.Command, deps Dependencies, reconnect bool) error
 	if err != nil {
 		return err
 	}
+	if prefixUpdate != nil {
+		prefix := *prefixUpdate
+		preferences.MessagePrefix = &prefix
+	}
+	mode := selectedPresentation
+	preferences.MessagePresentation = &mode
+	setFormattingEnabled(&preferences, textformat.ModuleEmDashToSpacedHyphen, formatEmDashes)
 	setMutationDenied(&document, config.MutationReply, !allowReply)
 	setMutationDenied(&document, config.MutationWrite, !allowWrite)
 	setMutationDenied(&document, config.MutationEdit, !allowEdit)
 	setMutationDenied(&document, config.MutationReplace, !allowReplace)
 	setMutationDenied(&document, config.MutationDelete, !allowDelete)
-	if err := saveConfigDocument(store, document); err != nil {
+	if err := saveIdentityConfigDocument(bound, store, document, preferences); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Preferences saved to %s.\n", path)
+	fmt.Fprintf(cmd.OutOrStdout(), "Configuration saved to %s.\n", path)
 	return setupDisabledReminder(cmd, document.Disabled)
 }
 

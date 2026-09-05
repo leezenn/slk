@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/leezenn/slk/internal/api"
+	"github.com/leezenn/slk/internal/format"
 )
 
 type fakeActivitySearcher struct {
@@ -162,6 +163,7 @@ func TestFormatActivityExplainsFieldAndContinuations(t *testing.T) {
 			Match: api.SearchMatch{
 				User: target.ID, Text: "please ask <@U87654321>", Ts: "1700000400.000001",
 				Channel: api.SearchChannel{ID: "C12345678", Name: "deployments"}, Permalink: permalink,
+				Files: []api.File{{ID: "F12345678", Name: "report.txt"}},
 			},
 			Reasons: []activityReason{activityAuthored},
 		}},
@@ -176,11 +178,14 @@ func TestFormatActivityExplainsFieldAndContinuations(t *testing.T) {
 	got := formatActivity(target, target.ID, time.Unix(1_700_000_000, 0), time.Unix(1_700_004_600, 0), groups, resolveUser)
 	for _, want := range []string{
 		"Activity around @alex (me)",
+		format.SlackContentNotice,
+		format.SearchContentNotice,
 		"Search-derived; limited to messages visible to the authenticated Slack user.",
 		"1 matching message across 1 conversation.",
 		"#deployments — latest 1h ago",
 		"authored · 1h ago · @alex (me)",
-		"please ask @sam",
+		"│ please ask @sam",
+		"[file] report.txt (0B) — slk download F12345678",
 		"Open: slk open '" + permalink + "'",
 	} {
 		if !strings.Contains(got, want) {
@@ -199,12 +204,13 @@ func TestActivityJSONCarriesIdentityReasonsAndTimestamps(t *testing.T) {
 		}},
 	}}
 
-	got := activityJSON(target, target.ID, time.Unix(1_700_000_000, 0), groups)
-	if !got.OK || !got.SearchDerived || !got.Person.IsSelf || got.Person.DisplayName != "Alex" {
+	got := activityJSON(target, target.ID, time.Unix(1_700_000_000, 0), groups, func(id string) string { return "resolved-" + id })
+	if !got.OK || got.ContentTrust != format.SlackContentTrust || !got.SearchDerived || !got.Person.IsSelf || got.Person.DisplayName != "Alex" {
 		t.Fatalf("identity payload = %#v", got)
 	}
-	if len(got.Conversations) != 1 || got.Conversations[0].Items[0].Message.Timestamp == "" {
-		t.Fatalf("conversation payload omitted temporal data: %#v", got.Conversations)
+	if len(got.Conversations) != 1 || got.Conversations[0].Items[0].Message.Timestamp == "" ||
+		got.Conversations[0].Items[0].Message.SemanticContent.Representation != format.SearchTextOnly {
+		t.Fatalf("conversation payload omitted temporal or semantic data: %#v", got.Conversations)
 	}
 	if got.Conversations[0].Items[0].Reasons[0] != activityAuthored {
 		t.Fatalf("reasons = %#v", got.Conversations[0].Items[0].Reasons)

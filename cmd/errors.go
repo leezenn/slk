@@ -70,6 +70,38 @@ func authRequiredError() error {
 	)
 }
 
+func identityUnavailableError(err error) error {
+	return newCommandError(
+		ErrorAuthFailed,
+		"Slack identity validation failed: "+safeDynamic(err.Error(), 256)+".",
+		"Run 'slk auth --interactive' to reauthenticate, then retry.",
+	)
+}
+
+func identityValidationError(err error) error {
+	return newCommandError(
+		ErrorAuthFailed,
+		"Slack did not return a complete canonical identity: "+safeDynamic(err.Error(), 256)+".",
+		"Run 'slk auth --interactive' to reauthenticate, then retry.",
+	)
+}
+
+func identityConfigError(err error) error {
+	return newCommandError(
+		ErrorConfig,
+		"slk could not select authenticated identity configuration: "+safeDynamic(err.Error(), 256)+".",
+		"Reauthenticate or repair the local configuration, then retry.",
+	)
+}
+
+func identityPreferencesDisabledError() error {
+	return newCommandError(
+		ErrorRefused,
+		"Authenticated identity preferences are unavailable while slk is disabled.",
+		"Ask the user for permission before running 'slk config enable'.",
+	)
+}
+
 func credentialBackendError(err error) error {
 	return newCommandError(
 		ErrorCredentialBackend,
@@ -158,12 +190,16 @@ func checkContext(ctx context.Context) error {
 	return nil
 }
 
+func isInterruption(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 func normalizeCommandError(err error, root *cobra.Command, args []string) *CommandError {
 	var commandErr *CommandError
 	if errors.As(err, &commandErr) {
 		return commandErr
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if isInterruption(err) {
 		return interruptedError().(*CommandError)
 	}
 	return invalidArgument(commandForArgs(root, args), err.Error()).(*CommandError)

@@ -21,7 +21,7 @@ type replaceClient interface {
 	UpdateMessage(request api.UpdateMessageRequest) (*api.UpdateMessageResult, error)
 }
 
-func newReplaceCommand(deps Dependencies, rootOptions *rootOptions, prefix string, configuredPresentation presentation.Mode, formatting ...textformat.Module) *cobra.Command {
+func newReplaceCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
 	options := &replaceOptions{}
 	command := &cobra.Command{
 		Use:   "replace <slack-permalink>",
@@ -31,7 +31,7 @@ func newReplaceCommand(deps Dependencies, rootOptions *rootOptions, prefix strin
 This is a whole-message replacement, not a patch or search-and-replace operation.
 The exact message must be authored by the authenticated user. The command acts
 immediately and applies the configured message_prefix to the replacement. Confirm
-the exact permalink and complete replacement text before invoking it.` + presentationHelp(configuredPresentation) + formattingHelp(formatting, "The --text value"),
+the exact permalink and complete replacement text before invoking it.` + presentationHelp() + formattingHelp("The --text value"),
 		Example: `  slk replace 'https://workspace.slack.com/archives/C12345/p1705312325000100' --text 'The deployment completed successfully.'`,
 		Args:    argumentValidator(cobra.ExactArgs(1)),
 	}
@@ -45,18 +45,22 @@ the exact permalink and complete replacement text before invoking it.` + present
 		if err != nil {
 			return invalidArgument(cmd, err.Error())
 		}
-		mode, err := resolvePresentation(cmd, options.presentation, configuredPresentation)
-		if err != nil {
+		if _, err := resolvePresentation(cmd, options.presentation, presentation.Default()); err != nil {
 			return err
 		}
 		if err := checkContext(cmd.Context()); err != nil {
 			return err
 		}
-		client, err := getClient(cmd, deps)
+		bound, settings, err := bindCommandIdentity(cmd, deps)
 		if err != nil {
 			return err
 		}
-		return runReplace(cmd, rootOptions, client, target, options.text, prefix, mode, formatting...)
+		mode, _ := resolvePresentation(cmd, options.presentation, settings.MessagePresentation)
+		client, err := getClient(cmd, bound)
+		if err != nil {
+			return err
+		}
+		return runReplace(cmd, rootOptions, client, target, options.text, settings.MessagePrefix, mode, settings.Formatting...)
 	}
 	return command
 }

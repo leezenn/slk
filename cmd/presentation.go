@@ -31,18 +31,15 @@ func resolvePresentation(command *cobra.Command, raw string, configured presenta
 	return mode, nil
 }
 
-func presentationHelp(configured presentation.Mode) string {
-	mode, err := presentation.Effective(configured)
-	if err != nil {
-		mode = presentation.Default()
-	}
+func presentationHelp() string {
 	return fmt.Sprintf(`
 
 Message presentation:
-  Effective default: %s
+  Built-in default: %s
+  Authenticated identity preferences are applied at execution.
   --presentation overrides this command only.
   slack-managed leaves section collapsing to Slack.
-  always-expanded asks Slack to keep generated sections expanded.`, mode)
+  always-expanded asks Slack to keep generated sections expanded.`, presentation.Default())
 }
 
 func writeRequestedPresentation(command *cobra.Command, mode presentation.Mode) {

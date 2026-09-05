@@ -71,10 +71,10 @@ func TestFormatMessagesMarksAuthenticatedUser(t *testing.T) {
 	}
 
 	got := FormatMessages(messages, "general", testResolveUser, testSelfID)
-	if !strings.Contains(got, "@owner (me): mine") {
+	if !strings.Contains(got, "@owner (me): │ mine") {
 		t.Fatalf("authenticated author was not marked as me:\n%s", got)
 	}
-	if !strings.Contains(got, "@teammate: theirs") {
+	if !strings.Contains(got, "@teammate: │ theirs") {
 		t.Fatalf("other author was not rendered normally:\n%s", got)
 	}
 	if strings.Contains(got, "@teammate (me)") {
@@ -206,7 +206,7 @@ func TestFormatSearchResultsMarksAuthenticatedUser(t *testing.T) {
 	}
 
 	got := FormatSearchResults(result, testResolveUser, testSelfID)
-	if !strings.Contains(got, "@owner (me): mine") {
+	if !strings.Contains(got, "@owner (me): │ mine") {
 		t.Fatalf("authenticated search author was not marked as me:\n%s", got)
 	}
 	if strings.Contains(got, "@teammate (me)") {
@@ -263,6 +263,133 @@ func TestSearchMatchesToJSONSetsIdentityAndDownloadCommand(t *testing.T) {
 	}
 	if strings.Contains(encoded, "message_presentation") {
 		t.Fatalf("search-derived JSON guessed presentation: %s", encoded)
+	}
+}
+
+func TestResolveTextCoversReadableSlackReferenceForms(t *testing.T) {
+	got := ResolveText(
+		"<@W12345678> <#G12345678> <mailto:one@example.test|email> <!here> <!subteam^S12345678|@ops> <!date^0^{date}|epoch>",
+		func(id string) string { return "resolved-" + id },
+	)
+	want := "@resolved-W12345678 #G12345678 email (mailto:one@example.test) @here @ops epoch"
+	if got != want {
+		t.Fatalf("ResolveText() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatMessagesLabelsTrustAndSemanticBoundaries(t *testing.T) {
+	blockOnly := formatRawBlock(t, map[string]interface{}{
+		"type": "rich_text",
+		"elements": []interface{}{
+			map[string]interface{}{"type": "rich_text_quote", "elements": []interface{}{map[string]string{"type": "text", "text": "quoted body"}}},
+		},
+	})
+	messages := []api.Message{
+		{User: testSelfID, Text: "first line\nsecond line", Ts: "1700000000.000000"},
+		{BotID: "B12345678", Username: "helper", Ts: "1700000001.000000", ReplyCount: 1, Blocks: []json.RawMessage{blockOnly}},
+	}
+
+	got := FormatMessages(messages, "general", testResolveUser, testSelfID)
+	for _, want := range []string{
+		SlackContentNotice,
+		"@owner (me): │ first line\n    │ second line",
+		"[history fallback text; block structure unavailable]",
+		"@helper [bot] [thread parent]:",
+		"[quote] │ quoted body",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("semantic message output omitted %q:\n%s", want, got)
+		}
+	}
+	if strings.Count(got, SlackContentNotice) != 1 {
+		t.Fatalf("trust notice count = %d, want 1:\n%s", strings.Count(got, SlackContentNotice), got)
+	}
+}
+
+func TestMessagesToJSONRetainsBlockOnlySemanticContent(t *testing.T) {
+	block := formatRawBlock(t, map[string]interface{}{
+		"type": "section",
+		"text": map[string]string{"type": "plain_text", "text": "block-only body"},
+	})
+	messages := []api.Message{{BotID: "B12345678", Username: "helper", Ts: "1700000000.000000", ReplyCount: 2, Blocks: []json.RawMessage{block}}}
+	got := MessagesToJSON(messages, testResolveUser, testSelfID)
+	if len(got) != 1 {
+		t.Fatalf("block-only messages = %d, want 1", len(got))
+	}
+	message := got[0]
+	if message.Text != "" || message.AuthorKind != AuthorBot || message.ThreadRole != ThreadParent {
+		t.Fatalf("semantic metadata = %#v", message)
+	}
+	if message.SemanticContent.Representation != HistoryBlocks || len(message.SemanticContent.Parts) != 1 || message.SemanticContent.Parts[0].Text != "block-only body" {
+		t.Fatalf("semantic content = %#v", message.SemanticContent)
+	}
+	encoded, err := FormatJSON(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(encoded, `"blocks"`) || !strings.Contains(encoded, `"semantic_content"`) {
+		t.Fatalf("JSON exposed raw blocks or omitted semantic content: %s", encoded)
+	}
+}
+
+func TestFormatSearchResultsLabelsLimitedSemanticContentOnce(t *testing.T) {
+	result := &api.SearchResult{}
+	result.Messages.Total = 1
+	result.Messages.Matches = []api.SearchMatch{{
+		User: testOtherID, Text: "> quoted <@U12345678>", Ts: "1700000000.000000",
+		Channel: api.SearchChannel{Name: "general"},
+	}}
+	got := FormatSearchResults(result, testResolveUser, testSelfID)
+	for _, want := range []string{SlackContentNotice, SearchContentNotice, "[quote] │ quoted @owner"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("search output omitted %q:\n%s", want, got)
+		}
+	}
+	if strings.Count(got, SearchContentNotice) != 1 {
+		t.Fatalf("search limitation count = %d, want 1:\n%s", strings.Count(got, SearchContentNotice), got)
+	}
+}
+
+func TestSearchMatchToJSONResolvedAddsSourceHonestSemantics(t *testing.T) {
+	match := api.SearchMatch{User: testOtherID, Text: "hello <@U12345678>"}
+	got := SearchMatchToJSONResolved(match, testResolveUser, testSelfID)
+	if got.AuthorKind != AuthorSlackUser || got.ThreadRole != ThreadUnknown {
+		t.Fatalf("search metadata = %#v", got)
+	}
+	content := got.SemanticContent
+	if content.Representation != SearchTextOnly || content.CompositionProvenance != "unknown" || len(content.Parts) != 1 || content.Parts[0].Text != "hello @owner" {
+		t.Fatalf("search semantic content = %#v", content)
+	}
+	if got.Text != match.Text {
+		t.Fatalf("legacy search text changed from %q to %q", match.Text, got.Text)
+	}
+}
+
+func TestSemanticMrkdwnPreservesLabelledDestinations(t *testing.T) {
+	message := api.Message{Blocks: []json.RawMessage{formatRawBlock(t, map[string]interface{}{
+		"type": "section",
+		"text": map[string]string{
+			"type": "mrkdwn",
+			"text": "See <https://example.test/report|quarterly report> or <mailto:one@example.test|email>",
+		},
+	})}}
+	got := MessagesToJSON([]api.Message{message}, testResolveUser, testSelfID)
+	if len(got) != 1 || len(got[0].SemanticContent.Parts) != 1 {
+		t.Fatalf("semantic link message = %#v", got)
+	}
+	want := "See quarterly report (https://example.test/report) or email (mailto:one@example.test)"
+	if got[0].SemanticContent.Parts[0].Text != want {
+		t.Fatalf("semantic links = %q, want %q", got[0].SemanticContent.Parts[0].Text, want)
+	}
+
+	fallback := ProjectMessageContent(api.Message{Text: "<https://example.test/report|quarterly report>"}, nil)
+	if len(fallback.Parts) != 1 || fallback.Parts[0].Text != "quarterly report (https://example.test/report)" {
+		t.Fatalf("fallback link semantics = %#v", fallback)
+	}
+
+	search := SearchMatchToJSONResolved(api.SearchMatch{Text: "<https://example.test|site>"}, nil, "")
+	if len(search.SemanticContent.Parts) != 1 || search.SemanticContent.Parts[0].Text != "site (https://example.test)" {
+		t.Fatalf("search link semantics = %#v", search.SemanticContent)
 	}
 }
 

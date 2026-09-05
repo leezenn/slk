@@ -18,7 +18,7 @@ type writeClient interface {
 	targetResolver
 }
 
-func newWriteCommand(deps Dependencies, rootOptions *rootOptions, prefix string, configuredPresentation presentation.Mode, formatting ...textformat.Module) *cobra.Command {
+func newWriteCommand(deps Dependencies, rootOptions *rootOptions) *cobra.Command {
 	options := &writeOptions{}
 	command := &cobra.Command{
 		Use:   "write <channel-or-user>",
@@ -29,7 +29,7 @@ The target may be a channel name or ID, an existing DM handle such as @alex,
 a Slack user ID, or a DM channel ID. The command posts immediately. Confirm the
 exact target and text before invoking it. Messages include the configured message
 prefix as a small context line unless message_prefix is explicitly empty. Slack
-must grant the current user token chat:write.` + presentationHelp(configuredPresentation) + formattingHelp(formatting, "The --text value"),
+must grant the current user token chat:write.` + presentationHelp() + formattingHelp("The --text value"),
 		Example: `  slk write general --text 'The deployment is complete.'
   slk write @alex --text 'Could you review the latest draft?'`,
 		Args: argumentValidator(cobra.ExactArgs(1)),
@@ -43,18 +43,22 @@ must grant the current user token chat:write.` + presentationHelp(configuredPres
 		if strings.TrimSpace(options.text) == "" {
 			return invalidArgument(cmd, "--text must contain the message")
 		}
-		mode, err := resolvePresentation(cmd, options.presentation, configuredPresentation)
-		if err != nil {
+		if _, err := resolvePresentation(cmd, options.presentation, presentation.Default()); err != nil {
 			return err
 		}
 		if err := checkContext(cmd.Context()); err != nil {
 			return err
 		}
-		client, err := getClient(cmd, deps)
+		bound, settings, err := bindCommandIdentity(cmd, deps)
 		if err != nil {
 			return err
 		}
-		return runWrite(cmd, rootOptions, client, args[0], options.text, prefix, mode, formatting...)
+		mode, _ := resolvePresentation(cmd, options.presentation, settings.MessagePresentation)
+		client, err := getClient(cmd, bound)
+		if err != nil {
+			return err
+		}
+		return runWrite(cmd, rootOptions, client, args[0], options.text, settings.MessagePrefix, mode, settings.Formatting...)
 	}
 	return command
 }

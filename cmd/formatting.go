@@ -7,34 +7,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func formattingHelp(modules []textformat.Module, submittedText string) string {
-	if len(modules) == 0 {
-		return fmt.Sprintf(`
-
-Formatting: disabled. %s remains exact.
-Inspect or enable modules with 'slk config formatting'.`, submittedText)
-	}
+func formattingHelp(submittedText string) string {
 	return fmt.Sprintf(`
 
-Formatting enabled: %s.
-%s is transformed before Slack receives it. The em-dash-to-spaced-hyphen
-module changes word—word and word — word into word - word. Mutation receipts
-report formatting_applied. Change modules with 'slk config formatting'.`, textformat.List(modules), submittedText)
+Formatting:
+  Built-in default: disabled.
+  Authenticated identity preferences are applied at execution.
+  When enabled, %s may be transformed before Slack receives it; mutation
+  receipts report formatting_applied. Inspect modules with 'slk config formatting'.`, submittedText)
 }
 
-func rootFormattingHelp(modules []textformat.Module) string {
-	if len(modules) == 0 {
-		return `
+func rootFormattingHelp() string {
+	return `
 
 Formatting:
-  Enabled modules: none (submitted mutation text remains exact)`
-	}
-	return fmt.Sprintf(`
-
-Formatting:
-  Enabled modules: %s
-  Submitted mutation text may change before Slack receives it; receipts report
-  formatting_applied.`, textformat.List(modules))
+  Built-in default: disabled.
+  Authenticated identity preferences are applied at execution; mutation
+  receipts report formatting_applied.`
 }
 
 func formattingReceipt(applied []textformat.Module) []string {
