@@ -299,6 +299,24 @@ func TestEveryCommandHelpIsIsolated(t *testing.T) {
 	}
 }
 
+func TestRootHelpDocumentsMutationSafetyAndExitCodes(t *testing.T) {
+	code, stdout, stderr := runIsolated(t, forbiddenDependencies(t), context.Background(), "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("root help = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"Mutation safety:",
+		"Confirm the exact destination and final text",
+		"Permanent deletion requires explicit human approval",
+		"Exit codes:",
+		"130  Operation interrupted",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("root help missing %q in %q", want, stdout)
+		}
+	}
+}
+
 func TestJSONHelpLabelsSupportBoundary(t *testing.T) {
 	tests := []struct {
 		name string

@@ -130,6 +130,16 @@ Configuration:
 	}
 	return description + `.` + rootPresentationHelp(settings) + rootFormattingHelp() + rootStyleHelp() + `
 
+Mutation safety:
+  Inspect the destination, message, or thread before changing shared Slack state.
+  Confirm the exact destination and final text before write, reply, edit, or replace.
+  Permanent deletion requires explicit human approval and the --yes flag.
+
+Exit codes:
+  0    Success or explicit help/version
+  1    Invalid input, refusal, auth/config/API/filesystem failure, or internal error
+  130  Operation interrupted
+
 Environment:
   SLACK_TOKEN       Fallback token if keychain is not configured
   XDG_CONFIG_HOME   Config root; defaults to ~/.config
